@@ -1,0 +1,59 @@
+version: 2
+
+builds:
+  - id: promptvm
+    main: .
+    binary: promptvm
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/AIEngineering26/promptvm-cli/cmd.version={{.Version}}
+      - -X github.com/AIEngineering26/promptvm-cli/cmd.commit={{.Commit}}
+      - -X github.com/AIEngineering26/promptvm-cli/cmd.date={{.Date}}
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "promptvm_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+brews:
+  - repository:
+      owner: AIEngineering26
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    name: promptvm
+    homepage: https://github.com/AIEngineering26/promptvm-cli
+    description: "The official CLI for the PromptVM platform"
+    license: MIT
+    install: |
+      bin.install "promptvm"
+    test: |
+      system "#{bin}/promptvm", "version"
+
+release:
+  github:
+    owner: AIEngineering26
+    name: promptvm-cli
+  prerelease: auto
