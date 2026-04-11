@@ -155,6 +155,31 @@ func TestProfileCRUD(t *testing.T) {
 	}
 }
 
+func TestValidateProfileName(t *testing.T) {
+	valid := []string{"default", "staging", "prod-1", "user.one", "team_a", "abc123"}
+	for _, name := range valid {
+		if err := ValidateProfileName(name); err != nil {
+			t.Errorf("ValidateProfileName(%q) unexpected error: %v", name, err)
+		}
+	}
+	invalid := []string{"", ".", "..", "../escape", "team/a", "team\\a", "spaces here", "weird*name"}
+	for _, name := range invalid {
+		if err := ValidateProfileName(name); err == nil {
+			t.Errorf("ValidateProfileName(%q) expected error, got nil", name)
+		}
+	}
+}
+
+func TestSaveProfile_InvalidName(t *testing.T) {
+	_, cleanup := setupTestDir(t)
+	defer cleanup()
+
+	p := &Profile{Name: "../escape", APIKey: "pvk_live_xxxxxxxxx"}
+	if err := SaveProfile(p); err == nil {
+		t.Error("SaveProfile with traversal name should fail")
+	}
+}
+
 func TestMaskAPIKey(t *testing.T) {
 	tests := []struct {
 		input string

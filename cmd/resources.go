@@ -329,12 +329,14 @@ func newResDownloadCmd() *cobra.Command {
 				return fmt.Errorf("no download URL returned")
 			}
 
-			// Determine output file path
-			destPath := d.GetName()
+			// Determine output file path. Always sanitize the server-supplied
+			// resource name to prevent path-traversal if an attacker controls it.
+			safeName := sanitizeFilename(d.GetName())
+			destPath := safeName
 			if outputPath != "" {
 				info, statErr := os.Stat(outputPath)
 				if statErr == nil && info.IsDir() {
-					destPath = filepath.Join(outputPath, d.GetName())
+					destPath = filepath.Join(outputPath, safeName)
 				} else {
 					destPath = outputPath
 				}
@@ -410,6 +412,19 @@ func newResDeleteCmd() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")
 	return cmd
+}
+
+// sanitizeFilename strips any directory component and empty/dot-only names from
+// server-supplied filenames so they can be safely joined to a user-chosen
+// output directory without risk of path traversal.
+func sanitizeFilename(name string) string {
+	// Replace any path separators and keep only the base component.
+	base := filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+	// Reject traversal and empty components.
+	if base == "" || base == "." || base == ".." || base == "/" {
+		return "resource"
+	}
+	return base
 }
 
 func resHumanBytes(b int64) string {

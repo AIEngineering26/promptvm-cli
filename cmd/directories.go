@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -37,6 +36,8 @@ var dirsGetCmd = &cobra.Command{
 	RunE:  runDirsGet,
 }
 
+var dirsGetWorkspace string
+
 var dirsUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
 	Short: "Update a directory",
@@ -69,6 +70,9 @@ func init() {
 	dirsCreateCmd.Flags().String("parent", "", "Parent directory ID (omit for root)")
 	dirsCreateCmd.Flags().String("workspace", "", "Workspace ID (required)")
 
+	// get flags
+	dirsGetCmd.Flags().StringVar(&dirsGetWorkspace, "workspace", "", "Workspace ID containing the directory (required)")
+
 	// update flags
 	dirsUpdateCmd.Flags().String("name", "", "New directory name")
 	dirsUpdateCmd.Flags().String("parent", "", "New parent directory ID")
@@ -88,7 +92,7 @@ func runDirsList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--workspace is required")
 	}
 
-	resp, err := c.Directories.ListDirectories(context.Background(), &promptvmgosdk.ListDirectoriesRequest{
+	resp, err := c.Directories.ListDirectories(cmd.Context(), &promptvmgosdk.ListDirectoriesRequest{
 		WorkspaceID: workspace,
 	})
 	if err != nil {
@@ -200,7 +204,7 @@ func runDirsCreate(cmd *cobra.Command, args []string) error {
 		req.SetParentID(&parent)
 	}
 
-	resp, err := c.Directories.CreateDirectory(context.Background(), req)
+	resp, err := c.Directories.CreateDirectory(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("creating directory: %w", err)
 	}
@@ -215,15 +219,50 @@ func runDirsCreate(cmd *cobra.Command, args []string) error {
 }
 
 func runDirsGet(cmd *cobra.Command, args []string) error {
-	// The SDK doesn't have a dedicated GetDirectory method—use ListDirectories
-	// and filter, or print a message. For now we use the list approach with
-	// the directory's workspace. Since there's no standalone get endpoint in
-	// the directories SDK client, we inform the user.
-	// However, looking at the PRD the API has GET /api/v1/directories/:id.
-	// The Fern SDK may not have generated a dedicated getter. We'll use list
-	// and filter by ID as a workaround.
-	fmt.Printf("Directory ID: %s\n", args[0])
-	fmt.Println("Use `dirs list --workspace <ws-id>` to see full directory tree.")
+	// The SDK does not expose a dedicated GetDirectory endpoint, so we fetch
+	// the workspace's directory tree and filter by ID. This matches the same
+	// data the UI shows on a directory detail page.
+	if dirsGetWorkspace == "" {
+		return fmt.Errorf("--workspace is required")
+	}
+
+	c, err := client.NewFromContext(cmd)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.Directories.ListDirectories(cmd.Context(), &promptvmgosdk.ListDirectoriesRequest{
+		WorkspaceID: dirsGetWorkspace,
+	})
+	if err != nil {
+		return fmt.Errorf("listing directories: %w", err)
+	}
+
+	var match *promptvmgosdk.ListDirectoriesResponseDataItem
+	children := 0
+	for _, d := range resp.GetData() {
+		if d.ID == args[0] {
+			match = d
+		}
+		if d.ParentID != nil && *d.ParentID == args[0] {
+			children++
+		}
+	}
+	if match == nil {
+		return fmt.Errorf("directory %s not found in workspace %s", args[0], dirsGetWorkspace)
+	}
+
+	parent := "(root)"
+	if match.ParentID != nil {
+		parent = *match.ParentID
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "ID:        %s\n", match.ID)
+	fmt.Fprintf(cmd.OutOrStdout(), "Name:      %s\n", match.Name)
+	fmt.Fprintf(cmd.OutOrStdout(), "Slug:      %s\n", match.Slug)
+	fmt.Fprintf(cmd.OutOrStdout(), "Workspace: %s\n", dirsGetWorkspace)
+	fmt.Fprintf(cmd.OutOrStdout(), "Parent:    %s\n", parent)
+	fmt.Fprintf(cmd.OutOrStdout(), "Children:  %d\n", children)
+	fmt.Fprintf(cmd.OutOrStdout(), "Updated:   %s\n", match.UpdatedAt.Format("2006-01-02 15:04"))
 	return nil
 }
 
@@ -251,7 +290,7 @@ func runDirsUpdate(cmd *cobra.Command, args []string) error {
 		req.SetParentID(&parent)
 	}
 
-	resp, err := c.Directories.UpdateDirectory(context.Background(), req)
+	resp, err := c.Directories.UpdateDirectory(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("updating directory: %w", err)
 	}
@@ -279,7 +318,7 @@ func runDirsDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	resp, err := c.Directories.DeleteDirectory(context.Background(), &promptvmgosdk.DeleteDirectoryRequest{
+	resp, err := c.Directories.DeleteDirectory(cmd.Context(), &promptvmgosdk.DeleteDirectoryRequest{
 		DirectoryID: args[0],
 	})
 	if err != nil {

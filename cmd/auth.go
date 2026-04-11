@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
 	"github.com/AIEngineering26/promptvm-go-sdk/option"
@@ -124,12 +126,10 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Scopes: %s\n", info.scopes)
 	}
 
-	// Determine environment from key prefix
+	// Determine environment from key prefix (pk_test_... vs pk_live_...)
 	env := "live"
-	if len(apiKey) > 4 {
-		if apiKey[4:8] == "test" {
-			env = "test"
-		}
+	if len(apiKey) >= 8 && apiKey[3:7] == "test" {
+		env = "test"
 	}
 	if info.environment != "" {
 		env = info.environment
@@ -172,13 +172,15 @@ type validationInfo struct {
 	scopes      string
 }
 
-// validateAPIKey calls the API to verify the key is valid.
-// Returns info extracted from the response.
+// validateAPIKey calls a lightweight authenticated endpoint to verify the key.
+// It uses the marketplace categories list as a low-cost authenticated check.
 func validateAPIKey(client *sdkclient.Client) (*validationInfo, error) {
-	// Use the SDK's health or auth-check endpoint.
-	// The actual endpoint depends on the SDK—adapt as needed.
-	_ = client // TODO: call client.Auth.Verify() or similar when SDK supports it
-	// For now, accept the key if it has the expected prefix
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := client.MarketplaceBrowse.ListMarketplaceCategories(ctx); err != nil {
+		return nil, err
+	}
 	return &validationInfo{}, nil
 }
 

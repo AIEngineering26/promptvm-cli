@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 
+	clierrors "github.com/AIEngineering26/promptvm-cli/internal/errors"
 	"github.com/AIEngineering26/promptvm-cli/internal/output"
+	"github.com/AIEngineering26/promptvm-cli/internal/prompt"
 	"github.com/spf13/cobra"
 )
 
@@ -16,11 +18,28 @@ var rootCmd = &cobra.Command{
 		noColor, _ := cmd.Flags().GetBool("no-color")
 		output.InitColor(noColor)
 	},
+	// Cobra already prints its own error to stderr before Execute returns,
+	// so silence its default error handling and let Execute print a
+	// friendlier message.
+	SilenceErrors: true,
+	SilenceUsage:  true,
 }
 
+// Execute runs the root command and maps any error to a user-friendly
+// CLIError before exiting with a non-zero status.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// Cancelled interactive prompt should exit silently with code 1.
+		if err == prompt.ErrCancelled {
+			os.Exit(1)
+		}
+
+		// Translate SDK/HTTP errors into CLI-friendly output.
+		if cliErr := clierrors.FromSDK(err); cliErr != nil {
+			fmt.Fprintln(os.Stderr, cliErr.Error())
+		} else {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+		}
 		os.Exit(1)
 	}
 }
