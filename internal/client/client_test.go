@@ -20,12 +20,12 @@ func TestResolveAPIKey_Flag(t *testing.T) {
 
 	cmd := newRootCmdWithFlags()
 	_ = cmd.Flags().Set("api-key", "flag_key")
-	got, err := resolveAPIKey(cmd)
+	got, err := resolveToken(cmd)
 	if err != nil {
-		t.Fatalf("resolveAPIKey: %v", err)
+		t.Fatalf("resolveToken: %v", err)
 	}
 	if got != "flag_key" {
-		t.Errorf("resolveAPIKey = %q, want flag_key", got)
+		t.Errorf("resolveToken = %q, want flag_key", got)
 	}
 }
 
@@ -35,12 +35,12 @@ func TestResolveAPIKey_Env(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	cmd := newRootCmdWithFlags()
-	got, err := resolveAPIKey(cmd)
+	got, err := resolveToken(cmd)
 	if err != nil {
-		t.Fatalf("resolveAPIKey: %v", err)
+		t.Fatalf("resolveToken: %v", err)
 	}
 	if got != "env_key" {
-		t.Errorf("resolveAPIKey = %q, want env_key", got)
+		t.Errorf("resolveToken = %q, want env_key", got)
 	}
 }
 
@@ -50,7 +50,7 @@ func TestResolveAPIKey_Missing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	cmd := newRootCmdWithFlags()
-	if _, err := resolveAPIKey(cmd); err == nil {
+	if _, err := resolveToken(cmd); err == nil {
 		t.Error("expected error when no API key is configured")
 	}
 }

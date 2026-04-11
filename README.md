@@ -40,32 +40,61 @@ promptvm version
 
 ## Authentication
 
-The CLI reads credentials from (in order):
+The CLI supports two flows: **browser SSO** (default) and the **legacy API key**. Both persist named profiles at `~/.config/promptvm/profiles/<name>.yaml` with `0600` permissions.
 
-1. `--api-key` flag
-2. `PROMPTVM_API_KEY` environment variable
-3. The active profile in `~/.config/promptvm/config.yaml`
-
-The easiest way to set things up is interactively:
+### Browser SSO (default, recommended)
 
 ```bash
 promptvm auth login
 ```
 
-You will be prompted for an API key and a profile name. The profile is stored at `~/.config/promptvm/profiles/<name>.yaml` with `0600` permissions. Switch between profiles with `promptvm profile use <name>`.
+Opens your default browser to the PromptVM web app, authorizes via PKCE over a loopback redirect (RFC 8252), and stores the resulting access and refresh tokens in your OS keychain. The YAML profile only keeps metadata (expiry, user id/email) — **no secrets are ever written to disk in cleartext**.
 
-Inspect the current authentication state:
-
-```bash
-promptvm auth status
-```
-
-Sign out:
+### Device code flow (headless, SSH, CI)
 
 ```bash
-promptvm auth logout           # remove the active profile
-promptvm auth logout --all     # remove every profile
+promptvm auth login --device
+# equivalently:
+promptvm auth login --no-browser
+PROMPTVM_HEADLESS=1 promptvm auth login
 ```
+
+Prints a short user code and a URL you open on another device (RFC 8628). PromptVM polls the authorization server until you approve.
+
+The CLI automatically suggests `--device` if it detects an SSH session, `CI=true`, or a GitHub Codespace.
+
+### Legacy API key (unchanged)
+
+```bash
+promptvm auth login --api-key pk_live_...
+```
+
+For scripts and environments that need a long-lived key. Works exactly as before; stored under the same profile system.
+
+### Other flags
+
+```bash
+promptvm auth login --profile staging        # name the profile
+promptvm auth login --base-url https://...   # custom API base URL
+```
+
+### Status, sessions, logout
+
+```bash
+promptvm auth status                 # show auth type (OAuth vs API key), user, expiry
+promptvm auth sessions list          # list your active server-side CLI tokens
+promptvm auth sessions revoke <id>   # revoke a session remotely (e.g. lost device)
+promptvm auth logout                 # remove active profile AND keychain tokens
+promptvm auth logout --all           # scrub every profile
+```
+
+The CLI reads credentials in this order:
+
+1. `--api-key` flag
+2. `PROMPTVM_API_KEY` environment variable
+3. The active profile in `~/.config/promptvm/config.yaml` (OAuth access token is loaded from the keychain and transparently refreshed when expired)
+
+Switch profiles with `promptvm profile use <name>`.
 
 ---
 
@@ -235,11 +264,14 @@ promptvm prompts list --no-color
 
 ## Environment variables
 
-| Variable             | Purpose                                         |
-|----------------------|-------------------------------------------------|
-| `PROMPTVM_API_KEY`   | API key used when no `--api-key` flag is given  |
-| `PROMPTVM_BASE_URL`  | Override the API base URL (staging, self-host)  |
-| `XDG_CONFIG_HOME`    | Root for `promptvm/` config directory           |
+| Variable               | Purpose                                                          |
+|------------------------|------------------------------------------------------------------|
+| `PROMPTVM_API_KEY`     | API key used when no `--api-key` flag is given                   |
+| `PROMPTVM_BASE_URL`    | Override the API base URL (staging, self-host)                   |
+| `PROMPTVM_APP_URL`     | Override the web app URL used by `auth login` (derived otherwise)|
+| `PROMPTVM_HEADLESS`    | Set to `1` to force `auth login` into the device-code flow       |
+| `PROMPTVM_DEVICE_NAME` | Label sent to the server when authorizing a CLI session          |
+| `XDG_CONFIG_HOME`      | Root for `promptvm/` config directory                            |
 
 ---
 
@@ -265,6 +297,7 @@ internal/
   config/        on-disk config + profile store (~/.config/promptvm)
   errors/        user-facing CLIError with hints
   ioutil/        shared helpers (e.g. reading --content / --file)
+  oauth/         PKCE, loopback redirect, device-code grant, keychain store
   output/        table / json / yaml formatters, colour, spinner, progress, time
   prompt/        interactive confirm / select / input (huh)
 main.go          entrypoint calling cmd.Execute()

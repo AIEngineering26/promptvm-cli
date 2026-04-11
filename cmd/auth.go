@@ -3,38 +3,37 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
 	"github.com/AIEngineering26/promptvm-go-sdk/option"
 	"github.com/AIEngineering26/promptvm-cli/internal/config"
+	"github.com/AIEngineering26/promptvm-cli/internal/oauth"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
 
 var authCmd = &cobra.Command{
 	Use:   "auth",
-	Short: "Manage API key authentication",
+	Short: "Manage authentication",
 }
 
 var authLoginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Authenticate with an API key",
-	Long:  "Interactively enter and validate an API key, then save it as a named profile.",
-	RunE:  runAuthLogin,
-}
+	Short: "Authenticate with PromptVM",
+	Long: `Authenticate with PromptVM.
 
-var authLogoutCmd = &cobra.Command{
-	Use:   "logout",
-	Short: "Remove stored credentials",
-	RunE:  runAuthLogout,
-}
+By default, opens a browser to sign in via the PromptVM web app and
+stores a scoped CLI token in the OS keychain (OAuth/SSO flow).
 
-var authStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Show current authentication state",
-	RunE:  runAuthStatus,
+Use --device on headless machines: a user code is printed and you
+complete authorization in a browser on another device (RFC 8628).
+
+Use --api-key for the legacy long-lived API key flow.`,
+	RunE: runAuthLogin,
 }
 
 func init() {
@@ -42,21 +41,62 @@ func init() {
 	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authLogoutCmd)
 	authCmd.AddCommand(authStatusCmd)
+	authCmd.AddCommand(authSessionsCmd)
 
-	authLoginCmd.Flags().String("api-key", "", "API key (non-interactive mode)")
-	authLoginCmd.Flags().String("profile", "", "Profile name (default: \"default\")")
+	// Login flags.
+	authLoginCmd.Flags().String("api-key", "", "Use the legacy long-lived API key flow (non-interactive)")
+	authLoginCmd.Flags().String("profile", "", `Profile name (default: "default")`)
 	authLoginCmd.Flags().String("base-url", "", "Custom API base URL")
+	authLoginCmd.Flags().String("app-url", "", "Web app base URL (overrides autodetection)")
+	_ = authLoginCmd.Flags().MarkHidden("app-url")
+	authLoginCmd.Flags().Bool("device", false, "Use the device authorization grant (RFC 8628) — best for headless / SSH / CI")
+	authLoginCmd.Flags().Bool("no-browser", false, "Alias for --device")
 
+	// Logout flags.
 	authLogoutCmd.Flags().String("profile", "", "Profile to remove (default: active profile)")
 	authLogoutCmd.Flags().Bool("all", false, "Remove all profiles")
 }
 
-func runAuthLogin(cmd *cobra.Command, args []string) error {
+// runAuthLogin dispatches to one of three backend flows depending on
+// the user's flags and environment:
+//
+//	--api-key pk_...       → legacy API-key flow (unchanged behavior)
+//	--device | --no-browser | PROMPTVM_HEADLESS=1 → device code flow
+//	(default)              → browser-based PKCE flow
+func runAuthLogin(cmd *cobra.Command, _ []string) error {
 	apiKey, _ := cmd.Flags().GetString("api-key")
 	profileName, _ := cmd.Flags().GetString("profile")
+
+	if apiKey != "" {
+		return runAPIKeyLogin(cmd, apiKey, profileName)
+	}
+
+	useDevice, _ := cmd.Flags().GetBool("device")
+	noBrowser, _ := cmd.Flags().GetBool("no-browser")
+	if os.Getenv("PROMPTVM_HEADLESS") == "1" {
+		useDevice = true
+	}
+	if noBrowser {
+		useDevice = true
+	}
+
+	if !useDevice && isLikelyHeadless() {
+		fmt.Fprintln(cmd.ErrOrStderr(), "It looks like you're in a headless session.")
+		fmt.Fprintln(cmd.ErrOrStderr(), "Consider `promptvm auth login --device` instead.")
+		fmt.Fprintln(cmd.ErrOrStderr())
+	}
+
+	if useDevice {
+		return runDeviceLogin(cmd, profileName)
+	}
+	return runBrowserLogin(cmd, profileName)
+}
+
+// runAPIKeyLogin keeps the old behavior: prompt for key (if missing),
+// validate it against the API, then persist it under the chosen profile.
+func runAPIKeyLogin(cmd *cobra.Command, apiKey, profileName string) error {
 	baseURL, _ := cmd.Flags().GetString("base-url")
 
-	// Interactive API key input
 	if apiKey == "" {
 		prompt := promptui.Prompt{
 			Label: "Enter your API key",
@@ -75,7 +115,6 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Interactive profile name input
 	if profileName == "" {
 		prompt := promptui.Prompt{
 			Label:   "Give this profile a name",
@@ -95,7 +134,6 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		baseURL = "https://api.promptvm.com"
 	}
 
-	// Validate the key against the API
 	fmt.Print("Validating key... ")
 
 	opts := []option.RequestOption{
@@ -111,7 +149,6 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println("✓")
 
-	// Display validation results
 	if info.email != "" {
 		fmt.Printf("Authenticated as %s", info.email)
 		if info.org != "" {
@@ -135,9 +172,9 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		env = info.environment
 	}
 
-	// Save profile
 	profile := &config.Profile{
 		Name:         profileName,
+		AuthType:     config.AuthTypeAPIKey,
 		APIKey:       apiKey,
 		BaseURL:      baseURL,
 		Environment:  env,
@@ -148,7 +185,6 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("saving profile: %w", err)
 	}
 
-	// Set as active profile
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -184,88 +220,139 @@ func validateAPIKey(client *sdkclient.Client) (*validationInfo, error) {
 	return &validationInfo{}, nil
 }
 
-func runAuthLogout(cmd *cobra.Command, args []string) error {
-	removeAll, _ := cmd.Flags().GetBool("all")
+// saveOAuthProfile persists tokens to the keychain and writes an OAuth
+// profile YAML with only metadata (no secrets in the file).
+func saveOAuthProfile(profileName, baseURL string, tokens *oauth.TokenResponse) error {
+	if profileName == "" {
+		profileName = "default"
+	}
+	if err := config.ValidateProfileName(profileName); err != nil {
+		return err
+	}
+
+	stored := &oauth.StoredTokens{
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+		ExpiresAt:    tokens.ExpiresAt,
+	}
+	if err := oauth.SaveTokens(profileName, stored); err != nil {
+		return fmt.Errorf("saving tokens: %w", err)
+	}
+
+	env := "live"
+	if strings.Contains(baseURL, "staging") {
+		env = "staging"
+	}
+
+	profile := &config.Profile{
+		Name:         profileName,
+		AuthType:     config.AuthTypeOAuth,
+		BaseURL:      baseURL,
+		Environment:  env,
+		Organization: tokens.Organization,
+		TokenRef:     "promptvm-cli:" + profileName,
+		ExpiresAt:    tokens.ExpiresAt,
+		UserID:       tokens.UserID,
+		UserEmail:    tokens.UserEmail,
+	}
+	if err := config.SaveProfile(profile); err != nil {
+		return fmt.Errorf("saving profile: %w", err)
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
-		return err
+		return fmt.Errorf("loading config: %w", err)
+	}
+	cfg.ActiveProfile = profileName
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("saving config: %w", err)
 	}
 
-	if removeAll {
-		profiles, err := config.ListProfiles()
-		if err != nil {
-			return err
+	fmt.Println()
+	if tokens.UserEmail != "" {
+		if tokens.Organization != "" {
+			fmt.Printf("✓ Authenticated as %s (%s)\n", tokens.UserEmail, tokens.Organization)
+		} else {
+			fmt.Printf("✓ Authenticated as %s\n", tokens.UserEmail)
 		}
-		for _, p := range profiles {
-			if err := config.DeleteProfile(p.Name); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not remove profile %q: %v\n", p.Name, err)
-			} else {
-				fmt.Printf("Removed profile %q.\n", p.Name)
-			}
-		}
-		return nil
+	} else {
+		fmt.Println("✓ Authenticated")
 	}
-
-	profileName, _ := cmd.Flags().GetString("profile")
-	if profileName == "" {
-		profileName = cfg.ActiveProfile
-	}
-
-	if err := config.DeleteProfile(profileName); err != nil {
-		return err
-	}
-
-	fmt.Printf("Removed profile %q.\n", profileName)
-
-	// If we removed the active profile, clear it
-	if profileName == cfg.ActiveProfile {
-		cfg.ActiveProfile = ""
-		return cfg.Save()
-	}
+	fmt.Printf("Active profile set to %q.\n", profileName)
 	return nil
 }
 
-func runAuthStatus(cmd *cobra.Command, args []string) error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
+// resolveBaseURL returns the API base URL honoring the standard
+// precedence: --base-url flag → PROMPTVM_BASE_URL → default.
+func resolveLoginBaseURL(cmd *cobra.Command) string {
+	if v, _ := cmd.Flags().GetString("base-url"); v != "" {
+		return v
 	}
-
-	if cfg.ActiveProfile == "" {
-		fmt.Println("No active profile. Run `promptvm auth login` to authenticate.")
-		return nil
+	if v := os.Getenv("PROMPTVM_BASE_URL"); v != "" {
+		return v
 	}
+	return "https://api.promptvm.com"
+}
 
-	profile, err := cfg.ActiveProfileData()
-	if err != nil {
-		fmt.Printf("Profile:  %s (not found)\n", cfg.ActiveProfile)
-		fmt.Println("Status:   ✗ Not authenticated")
-		fmt.Println("\nRun `promptvm auth login` to authenticate.")
-		return nil
+// resolveAppURL returns the web app base URL by checking the --app-url
+// flag, then PROMPTVM_APP_URL, then deriving it from the API base URL,
+// then the default.
+func resolveAppURL(cmd *cobra.Command, apiBaseURL string) string {
+	if v, _ := cmd.Flags().GetString("app-url"); v != "" {
+		return strings.TrimRight(v, "/")
 	}
-
-	fmt.Printf("Profile:      %s\n", profile.Name)
-	fmt.Printf("API Key:      %s\n", config.MaskAPIKey(profile.APIKey))
-	fmt.Printf("Base URL:     %s\n", profile.BaseURL)
-	fmt.Printf("Environment:  %s\n", profile.Environment)
-	if profile.Organization != "" {
-		fmt.Printf("Organization: %s\n", profile.Organization)
+	if v := os.Getenv("PROMPTVM_APP_URL"); v != "" {
+		return strings.TrimRight(v, "/")
 	}
-
-	// Validate the key is still active
-	opts := []option.RequestOption{
-		option.WithAPIKey(profile.APIKey),
-		option.WithBaseURL(profile.BaseURL),
+	if derived := deriveAppURL(apiBaseURL); derived != "" {
+		return derived
 	}
-	client := sdkclient.NewClient(opts...)
+	return "https://app.promptvm.com"
+}
 
-	_, err = validateAPIKey(client)
-	if err != nil {
-		fmt.Printf("Status:       ✗ Invalid (%v)\n", err)
-	} else {
-		fmt.Printf("Status:       ✓ Authenticated\n")
+// deriveAppURL swaps the leading "api" label for "app" in known
+// promptvm.com hostnames. Returns "" if the URL doesn't match.
+func deriveAppURL(apiBaseURL string) string {
+	if apiBaseURL == "" {
+		return ""
 	}
+	u, err := url.Parse(apiBaseURL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	host := u.Host
+	if strings.HasPrefix(host, "api.") {
+		host = "app." + strings.TrimPrefix(host, "api.")
+		return u.Scheme + "://" + host
+	}
+	return ""
+}
 
-	return nil
+// isLikelyHeadless returns true if the current process appears to be
+// running without a usable display (SSH, CI, Codespaces).
+func isLikelyHeadless() bool {
+	if os.Getenv("SSH_CONNECTION") != "" || os.Getenv("SSH_CLIENT") != "" {
+		return true
+	}
+	if os.Getenv("CI") != "" {
+		return true
+	}
+	if os.Getenv("CODESPACES") != "" {
+		return true
+	}
+	return false
+}
+
+// deviceName returns a short, human-friendly label for this device,
+// which is passed to the authorization server so the user can tell
+// different CLIs apart in the authorized-devices list later.
+func deviceName() string {
+	if v := os.Getenv("PROMPTVM_DEVICE_NAME"); v != "" {
+		return v
+	}
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return "promptvm-cli"
+	}
+	return "promptvm-cli @ " + host
 }
