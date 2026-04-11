@@ -26,9 +26,10 @@ type DeviceCodeResponse struct {
 // session in the authorized-devices list later.
 func RequestDeviceCode(ctx context.Context, baseURL, deviceName string) (*DeviceCodeResponse, error) {
 	body := map[string]string{
-		"client_id":   clientID,
-		"scope":       "profile",
-		"device_name": deviceName,
+		"client_id": clientID,
+	}
+	if deviceName != "" {
+		body["device_name"] = deviceName
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {

@@ -33,7 +33,15 @@ func TestExchangeCode_SendsExpectedPayload(t *testing.T) {
 			"access_token":  "at_new",
 			"refresh_token": "rt_new",
 			"expires_in":    3600,
-			"user_email":    "alex@example.com",
+			"user": map[string]any{
+				"id":    "u_1",
+				"email": "alex@example.com",
+			},
+			"organization": map[string]any{
+				"id":   "o_1",
+				"name": "Acme",
+				"slug": "acme",
+			},
 		})
 	}))
 	defer srv.Close()
@@ -54,8 +62,11 @@ func TestExchangeCode_SendsExpectedPayload(t *testing.T) {
 	if tr.RefreshToken != "rt_new" {
 		t.Errorf("RefreshToken = %q, want rt_new", tr.RefreshToken)
 	}
-	if tr.UserEmail != "alex@example.com" {
-		t.Errorf("UserEmail = %q", tr.UserEmail)
+	if tr.User == nil || tr.User.Email != "alex@example.com" {
+		t.Errorf("User.Email = %+v", tr.User)
+	}
+	if tr.Organization == nil || tr.Organization.Slug != "acme" {
+		t.Errorf("Organization = %+v", tr.Organization)
 	}
 	if tr.ExpiresAt.IsZero() {
 		t.Errorf("ExpiresAt should be populated from expires_in")

@@ -19,9 +19,9 @@ const (
 	// security comes from PKCE and the loopback redirect.
 	clientID = "promptvm-cli"
 
-	cliTokenPath    = "/api/auth/cli/token"
-	deviceCodePath  = "/api/auth/device/code"
-	deviceTokenPath = "/api/auth/device/token"
+	cliTokenPath    = "/api/v1/auth/cli/token"
+	deviceCodePath  = "/api/v1/auth/device/code"
+	deviceTokenPath = "/api/v1/auth/device/token"
 )
 
 // ExchangeCode trades an authorization code + PKCE verifier for a token
