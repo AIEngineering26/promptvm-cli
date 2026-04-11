@@ -5,8 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 
 	"gopkg.in/yaml.v3"
+)
+
+// Auth type constants for Profile.AuthType.
+const (
+	AuthTypeAPIKey = "api_key"
+	AuthTypeOAuth  = "oauth"
 )
 
 // profileNamePattern restricts profile names to safe filesystem characters.
@@ -42,12 +49,30 @@ type Defaults struct {
 }
 
 // Profile represents a named authentication profile.
+//
+// Profiles support two authentication modes selected by AuthType:
+//   - "api_key" (legacy): the long-lived API key is stored in APIKey.
+//   - "oauth" (SSO): no access/refresh tokens live in this file; tokens
+//     are stored in the OS keychain keyed by TokenRef. Only metadata
+//     (expiry, user id/email) is persisted here.
 type Profile struct {
 	Name         string `yaml:"name"`
-	APIKey       string `yaml:"api_key"`
+	APIKey       string `yaml:"api_key,omitempty"`
 	BaseURL      string `yaml:"base_url"`
 	Environment  string `yaml:"environment"`
 	Organization string `yaml:"organization,omitempty"`
+
+	// OAuth / SSO metadata. Empty for legacy API-key profiles.
+	AuthType  string    `yaml:"auth_type,omitempty"`
+	TokenRef  string    `yaml:"token_ref,omitempty"`
+	ExpiresAt time.Time `yaml:"expires_at,omitempty"`
+	UserID    string    `yaml:"user_id,omitempty"`
+	UserEmail string    `yaml:"user_email,omitempty"`
+}
+
+// IsOAuth reports whether the profile uses OAuth/SSO authentication.
+func (p *Profile) IsOAuth() bool {
+	return p.AuthType == AuthTypeOAuth
 }
 
 // dirOverride allows tests to redirect config storage.

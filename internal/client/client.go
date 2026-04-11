@@ -1,12 +1,15 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
 	"github.com/AIEngineering26/promptvm-go-sdk/option"
 	"github.com/AIEngineering26/promptvm-cli/internal/config"
+	"github.com/AIEngineering26/promptvm-cli/internal/oauth"
 	"github.com/spf13/cobra"
 )
 
@@ -18,8 +21,11 @@ const (
 
 // NewFromContext creates an SDK client from CLI context.
 // Resolution order: flag → environment variable → config file → default.
+//
+// For OAuth profiles the access token is loaded from the keychain and
+// auto-refreshed if it has expired.
 func NewFromContext(cmd *cobra.Command) (*sdkclient.Client, error) {
-	apiKey, err := resolveAPIKey(cmd)
+	token, err := resolveToken(cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -27,7 +33,7 @@ func NewFromContext(cmd *cobra.Command) (*sdkclient.Client, error) {
 	baseURL := resolveBaseURL(cmd)
 
 	opts := []option.RequestOption{
-		option.WithAPIKey(apiKey),
+		option.WithAPIKey(token),
 	}
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
@@ -36,7 +42,10 @@ func NewFromContext(cmd *cobra.Command) (*sdkclient.Client, error) {
 	return sdkclient.NewClient(opts...), nil
 }
 
-func resolveAPIKey(cmd *cobra.Command) (string, error) {
+// resolveToken returns the bearer token to send with API requests. For
+// OAuth profiles this dynamically loads and refreshes tokens from the
+// keychain; for legacy api_key profiles it returns the stored key.
+func resolveToken(cmd *cobra.Command) (string, error) {
 	// 1. Flag
 	if key, _ := cmd.Flags().GetString("api-key"); key != "" {
 		return key, nil
@@ -47,9 +56,16 @@ func resolveAPIKey(cmd *cobra.Command) (string, error) {
 		return key, nil
 	}
 
-	// 3. Config file (active profile)
-	if profile := activeProfile(); profile != nil && profile.APIKey != "" {
-		return profile.APIKey, nil
+	// 3. Active profile (API key or OAuth)
+	if profile := activeProfile(); profile != nil {
+		if profile.IsOAuth() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			return oauth.AccessTokenForProfile(ctx, profile)
+		}
+		if profile.APIKey != "" {
+			return profile.APIKey, nil
+		}
 	}
 
 	return "", fmt.Errorf("API key required: set --api-key flag, %s env var, or run `promptvm auth login`", envAPIKey)
