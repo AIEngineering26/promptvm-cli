@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: daily
+    reviewers:
+      - AIEngineering26/platform-team
+    labels:
+      - dependencies
+      - sdk-update
+    allow:
+      - dependency-name: "github.com/AIEngineering26/promptvm-go-sdk"
