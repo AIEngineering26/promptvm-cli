@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -111,7 +110,7 @@ func runColList(cmd *cobra.Command, args []string) error {
 		req.SetLimit(&v)
 	}
 
-	resp, err := c.Collections.ListCollections(context.Background(), req)
+	resp, err := c.Collections.ListCollections(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("listing collections: %w", err)
 	}
@@ -165,7 +164,7 @@ func runColCreate(cmd *cobra.Command, args []string) error {
 		req.SetDescription(&desc)
 	}
 
-	resp, err := c.Collections.CreateCollection(context.Background(), req)
+	resp, err := c.Collections.CreateCollection(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("creating collection: %w", err)
 	}
@@ -181,7 +180,7 @@ func runColGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	resp, err := c.Collections.GetCollection(context.Background(), &promptvmgosdk.GetCollectionRequest{
+	resp, err := c.Collections.GetCollection(cmd.Context(), &promptvmgosdk.GetCollectionRequest{
 		CollectionID: args[0],
 	})
 	if err != nil {
@@ -251,7 +250,7 @@ func runColUpdate(cmd *cobra.Command, args []string) error {
 		req.SetDescription(&desc)
 	}
 
-	resp, err := c.Collections.UpdateCollection(context.Background(), req)
+	resp, err := c.Collections.UpdateCollection(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("updating collection: %w", err)
 	}
@@ -278,7 +277,7 @@ func runColDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	resp, err := c.Collections.DeleteCollection(context.Background(), &promptvmgosdk.DeleteCollectionRequest{
+	resp, err := c.Collections.DeleteCollection(cmd.Context(), &promptvmgosdk.DeleteCollectionRequest{
 		CollectionID: args[0],
 	})
 	if err != nil {
@@ -303,7 +302,7 @@ func runColAdd(cmd *cobra.Command, args []string) error {
 		req.SetNote(&note)
 	}
 
-	resp, err := c.Collections.AddCollectionItem(context.Background(), req)
+	resp, err := c.Collections.AddCollectionItem(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("adding item to collection: %w", err)
 	}
@@ -335,7 +334,7 @@ func runColRemove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	resp, err := c.Collections.RemoveCollectionItem(context.Background(), &promptvmgosdk.RemoveCollectionItemRequest{
+	resp, err := c.Collections.RemoveCollectionItem(cmd.Context(), &promptvmgosdk.RemoveCollectionItemRequest{
 		CollectionID: args[0],
 		ItemID:       args[1],
 	})

@@ -17,12 +17,14 @@ var (
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print CLI, SDK, and Go version information",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("promptvm-cli %s\n", version)
-		fmt.Printf("  commit:  %s\n", commit)
-		fmt.Printf("  built:   %s\n", date)
-		fmt.Printf("  go-sdk:  %s\n", sdkVer)
-		fmt.Printf("  go:      %s\n", runtime.Version())
+	RunE: func(cmd *cobra.Command, args []string) error {
+		w := cmd.OutOrStdout()
+		fmt.Fprintf(w, "promptvm-cli %s\n", version)
+		fmt.Fprintf(w, "  commit:  %s\n", commit)
+		fmt.Fprintf(w, "  built:   %s\n", date)
+		fmt.Fprintf(w, "  go-sdk:  %s\n", sdkVer)
+		fmt.Fprintf(w, "  go:      %s\n", runtime.Version())
+		return nil
 	},
 }
 

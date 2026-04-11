@@ -1,0 +1,293 @@
+# PromptVM CLI
+
+The official command-line interface for the [PromptVM](https://promptvm.com) platform.
+
+`promptvm` wraps the PromptVM REST API via the generated [Go SDK](https://github.com/AIEngineering26/promptvm-go-sdk) and gives you scriptable, repeatable access to prompts, versions, workspaces, organizations, collections, directories, templates, the marketplace, resources, sharing, and API keys.
+
+---
+
+## Installation
+
+### Install script (macOS / Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AIEngineering26/promptvm-cli/main/install.sh | bash
+```
+
+### Homebrew
+
+```bash
+brew install AIEngineering26/tap/promptvm
+```
+
+### From source
+
+```bash
+go install github.com/AIEngineering26/promptvm-cli@latest
+```
+
+### Pre-built binaries
+
+Download the archive for your OS/arch from [GitHub Releases](https://github.com/AIEngineering26/promptvm-cli/releases) and place the `promptvm` binary somewhere on your `PATH`.
+
+Verify:
+
+```bash
+promptvm version
+```
+
+---
+
+## Authentication
+
+The CLI reads credentials from (in order):
+
+1. `--api-key` flag
+2. `PROMPTVM_API_KEY` environment variable
+3. The active profile in `~/.config/promptvm/config.yaml`
+
+The easiest way to set things up is interactively:
+
+```bash
+promptvm auth login
+```
+
+You will be prompted for an API key and a profile name. The profile is stored at `~/.config/promptvm/profiles/<name>.yaml` with `0600` permissions. Switch between profiles with `promptvm profile use <name>`.
+
+Inspect the current authentication state:
+
+```bash
+promptvm auth status
+```
+
+Sign out:
+
+```bash
+promptvm auth logout           # remove the active profile
+promptvm auth logout --all     # remove every profile
+```
+
+---
+
+## Configuration
+
+Global defaults live in `~/.config/promptvm/config.yaml`:
+
+```bash
+promptvm config list
+promptvm config set defaults.output json
+promptvm config set defaults.workspace ws_123
+promptvm config set defaults.no_color true
+```
+
+Supported keys:
+
+| Key                    | Values                 | Description                          |
+|------------------------|------------------------|--------------------------------------|
+| `active_profile`       | any profile name       | Profile selected by default          |
+| `defaults.output`      | `table`, `json`, `yaml`| Default output format                |
+| `defaults.no_color`    | `true`, `false`        | Disable ANSI colour in output        |
+| `defaults.workspace`   | workspace ID           | Implicit `--workspace` for commands  |
+
+---
+
+## Usage
+
+### Prompts
+
+```bash
+# Lifecycle
+promptvm prompts list --workspace ws_123
+promptvm prompts create --name "Support Reply" --workspace ws_123 --content "Hi {{name}}..."
+promptvm prompts get pmt_abc123
+promptvm prompts update pmt_abc123 --name "New name"
+promptvm prompts delete pmt_abc123 --yes
+
+# Resolve with variables (client-side {{var}} substitution)
+promptvm prompts resolve pmt_abc123 --var name=Ada --var lang=Go
+promptvm prompts resolve pmt_abc123 --vars-file vars.json
+
+# Versions
+promptvm prompts versions list pmt_abc123
+promptvm prompts versions create pmt_abc123 --content "..."
+promptvm prompts versions get pmt_abc123 v_456
+
+# Refs and dependents
+promptvm prompts references pmt_abc123
+promptvm prompts dependents pmt_abc123
+
+# Move / fork / export
+promptvm prompts move pmt_abc123 --directory dir_1
+promptvm prompts fork pmt_abc123 --name "Copy"
+promptvm prompts export pmt_abc123 --format md > prompt.md
+```
+
+### Workspaces and Organizations
+
+```bash
+promptvm workspaces list
+promptvm workspaces create --name "Platform" --visibility private
+promptvm workspaces pin ws_123
+promptvm workspaces transfer ws_123 --new-owner user_456
+
+promptvm orgs list
+promptvm orgs members list org_abc
+promptvm orgs invite org_abc --email new@example.com --role member
+```
+
+### Collections, Directories, Templates
+
+```bash
+promptvm collections create --name "Best of"
+promptvm collections add col_1 pmt_abc123
+
+promptvm dirs list --workspace ws_123
+promptvm dirs create --workspace ws_123 --name "Marketing"
+
+promptvm tpl convert pmt_abc123
+promptvm tpl instantiate tpl_42 --name "My Copy" --workspace ws_123 --vars key=value
+```
+
+### Marketplace
+
+```bash
+promptvm marketplace browse search --q "copywriting"
+promptvm marketplace browse featured
+promptvm marketplace browse categories
+
+promptvm marketplace listings create --title "Pro Copy Pack" --price 2999
+promptvm marketplace creator dashboard
+
+promptvm marketplace subscribe creator_abc
+promptvm marketplace rate lst_123 --stars 5 --review "Great!"
+promptvm marketplace comment lst_123 --message "Nice work"
+promptvm marketplace follow creator_abc
+promptvm marketplace feed
+```
+
+### Resources
+
+```bash
+promptvm resources list --workspace ws_123
+promptvm resources upload ./docs/*.pdf --prompt pmt_abc123
+promptvm resources get res_123
+promptvm resources download res_123 --output ./downloads
+promptvm resources delete res_123 --yes
+```
+
+### Sharing
+
+```bash
+promptvm share create pmt_abc123 --permission view --expires 30d
+promptvm share get share_link_id
+promptvm share revoke share_link_id
+
+promptvm share collaborators list pmt_abc123
+promptvm share collaborators add pmt_abc123 --email teammate@example.com --role edit
+promptvm share collaborators remove pmt_abc123 user_456
+```
+
+### API Keys
+
+```bash
+promptvm apikeys list
+promptvm apikeys create --name "CI" --scopes read,write --environment live
+promptvm apikeys get ak_123
+promptvm apikeys revoke ak_123
+promptvm apikeys usage ak_123
+```
+
+### Shell completion
+
+```bash
+promptvm completion bash > /etc/bash_completion.d/promptvm
+promptvm completion zsh  > "${fpath[1]}/_promptvm"
+promptvm completion fish > ~/.config/fish/completions/promptvm.fish
+promptvm completion powershell | Out-String | Invoke-Expression
+```
+
+---
+
+## Output formats
+
+Every read command supports JSON and YAML for scripting:
+
+```bash
+promptvm prompts list --output json | jq '.data[].id'
+promptvm workspaces list --output yaml
+promptvm prompts get pmt_abc123 -o json --compact
+```
+
+Hide the header / expand all columns in table output:
+
+```bash
+promptvm prompts list --no-header
+promptvm prompts list --wide
+```
+
+Disable colour explicitly (useful in CI):
+
+```bash
+promptvm prompts list --no-color
+```
+
+---
+
+## Environment variables
+
+| Variable             | Purpose                                         |
+|----------------------|-------------------------------------------------|
+| `PROMPTVM_API_KEY`   | API key used when no `--api-key` flag is given  |
+| `PROMPTVM_BASE_URL`  | Override the API base URL (staging, self-host)  |
+| `XDG_CONFIG_HOME`    | Root for `promptvm/` config directory           |
+
+---
+
+## Development
+
+```bash
+git clone https://github.com/AIEngineering26/promptvm-cli
+cd promptvm-cli
+make deps
+make build       # build ./bin/promptvm
+make test        # run unit tests
+make lint        # run golangci-lint
+make snapshot    # local GoReleaser snapshot build
+```
+
+Source layout:
+
+```
+cmd/             cobra commands, one file per resource
+internal/
+  api/           raw HTTP helper for endpoints not covered by the SDK
+  client/        SDK client factory (flag → env → profile → default)
+  config/        on-disk config + profile store (~/.config/promptvm)
+  errors/        user-facing CLIError with hints
+  ioutil/        shared helpers (e.g. reading --content / --file)
+  output/        table / json / yaml formatters, colour, spinner, progress, time
+  prompt/        interactive confirm / select / input (huh)
+main.go          entrypoint calling cmd.Execute()
+.goreleaser.yml  release configuration
+```
+
+The CLI imports the generated SDK from `github.com/AIEngineering26/promptvm-go-sdk`. Dependabot bumps it on every release.
+
+---
+
+## Releasing
+
+Releases are driven by [GoReleaser](https://goreleaser.com). Tag the commit and push:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+GitHub Actions will build archives for darwin/linux/windows × amd64/arm64, generate SBOMs, sign checksums, publish GitHub Releases, update the Homebrew tap, and push the install script.
+
+---
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

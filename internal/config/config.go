@@ -4,9 +4,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
+
+// profileNamePattern restricts profile names to safe filesystem characters.
+// This prevents directory traversal when loading/saving profiles by name.
+var profileNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// ValidateProfileName rejects profile names that contain path separators,
+// parent references, or other unsafe characters.
+func ValidateProfileName(name string) error {
+	if name == "" {
+		return fmt.Errorf("profile name cannot be empty")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("invalid profile name %q", name)
+	}
+	if !profileNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid profile name %q: allowed characters are letters, digits, dot, dash, underscore", name)
+	}
+	return nil
+}
 
 // Config represents the global CLI configuration.
 type Config struct {
@@ -64,7 +84,11 @@ func profilesDir() (string, error) {
 }
 
 // profilePath returns the path for a named profile file.
+// The profile name is validated to prevent path traversal attacks.
 func profilePath(name string) (string, error) {
+	if err := ValidateProfileName(name); err != nil {
+		return "", err
+	}
 	dir, err := profilesDir()
 	if err != nil {
 		return "", err

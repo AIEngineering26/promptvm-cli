@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -62,7 +61,7 @@ func runTplConvert(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	resp, err := c.Templates.ConvertPromptToTemplate(context.Background(), &promptvmgosdk.ConvertPromptToTemplateRequest{
+	resp, err := c.Templates.ConvertPromptToTemplate(cmd.Context(), &promptvmgosdk.ConvertPromptToTemplateRequest{
 		PromptID: args[0],
 	})
 	if err != nil {
@@ -113,7 +112,7 @@ func runTplInstantiate(cmd *cobra.Command, args []string) error {
 		req.SetVariableValues(varValues)
 	}
 
-	resp, err := c.Templates.CreatePromptFromTemplate(context.Background(), req)
+	resp, err := c.Templates.CreatePromptFromTemplate(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("instantiating template: %w", err)
 	}
@@ -144,7 +143,7 @@ func runTplList(cmd *cobra.Command, args []string) error {
 		req.SetLimit(&v)
 	}
 
-	resp, err := c.Templates.ListTemplates(context.Background(), req)
+	resp, err := c.Templates.ListTemplates(cmd.Context(), req)
 	if err != nil {
 		return fmt.Errorf("listing templates: %w", err)
 	}

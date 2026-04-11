@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/AIEngineering26/promptvm-cli/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -24,11 +25,17 @@ type Caller struct {
 	BaseURL string
 }
 
-// NewFromContext creates a Caller from CLI flags and environment.
+// NewFromContext creates a Caller from CLI flags, environment, and the active config profile.
+// Resolution order: flag → environment variable → active profile → default.
 func NewFromContext(cmd *cobra.Command) (*Caller, error) {
+	profile := activeProfile()
+
 	apiKey := resolveFlag(cmd, "api-key")
 	if apiKey == "" {
 		apiKey = os.Getenv(envAPIKey)
+	}
+	if apiKey == "" && profile != nil {
+		apiKey = profile.APIKey
 	}
 	if apiKey == "" {
 		return nil, fmt.Errorf("API key required: set --api-key flag, %s env var, or run `promptvm auth login`", envAPIKey)
@@ -38,11 +45,27 @@ func NewFromContext(cmd *cobra.Command) (*Caller, error) {
 	if baseURL == "" {
 		baseURL = os.Getenv(envBaseURL)
 	}
+	if baseURL == "" && profile != nil {
+		baseURL = profile.BaseURL
+	}
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 
 	return &Caller{APIKey: apiKey, BaseURL: baseURL}, nil
+}
+
+// activeProfile loads the active profile, returning nil on any error.
+func activeProfile() *config.Profile {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	profile, err := cfg.ActiveProfileData()
+	if err != nil {
+		return nil
+	}
+	return profile
 }
 
 // Get performs a GET request and decodes JSON into result.

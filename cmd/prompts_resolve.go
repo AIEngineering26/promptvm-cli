@@ -38,8 +38,14 @@ func newPromptsResolveCmd() *cobra.Command {
 				req.VersionID = &version
 			}
 
-			// Parse variables — not part of SDK request, included as context
-			_ = parseVariables(vars, varsFile)
+			// Parse CLI-supplied variables for client-side substitution.
+			// The SDK's ResolvePromptRequest handles server-side [[include:]]
+			// expansion; {{variable}} substitution happens below on the
+			// resolved content.
+			variables, err := parseVariables(vars, varsFile)
+			if err != nil {
+				return err
+			}
 
 			resp, err := c.PromptResolution.ResolvePrompt(cmd.Context(), req)
 			if err != nil {
@@ -49,7 +55,8 @@ func newPromptsResolveCmd() *cobra.Command {
 			return output.Print(cmd, resp, func(w io.Writer) error {
 				d := resp.GetData()
 				if d != nil {
-					fmt.Fprintf(w, "Resolved prompt:\n---\n%s\n---\n", d.GetResolvedContent())
+					content := applyVariables(d.GetResolvedContent(), variables)
+					fmt.Fprintf(w, "Resolved prompt:\n---\n%s\n---\n", content)
 				}
 				return nil
 			})
@@ -63,7 +70,7 @@ func newPromptsResolveCmd() *cobra.Command {
 	return cmd
 }
 
-func parseVariables(vars []string, varsFile string) map[string]string {
+func parseVariables(vars []string, varsFile string) (map[string]string, error) {
 	result := make(map[string]string)
 
 	if varsFile != "" {
@@ -74,23 +81,40 @@ func parseVariables(vars []string, varsFile string) map[string]string {
 		} else {
 			data, err = os.ReadFile(varsFile)
 		}
-		if err == nil {
-			var m map[string]string
-			if json.Unmarshal(data, &m) == nil {
-				for k, v := range m {
-					result[k] = v
-				}
-			}
+		if err != nil {
+			return nil, fmt.Errorf("reading vars file: %w", err)
+		}
+		var m map[string]string
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil, fmt.Errorf("parsing vars file (expected JSON object of string→string): %w", err)
+		}
+		for k, v := range m {
+			result[k] = v
 		}
 	}
 
 	for _, v := range vars {
-		if k, val, ok := strings.Cut(v, "="); ok {
-			result[k] = val
+		k, val, ok := strings.Cut(v, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid --var %q: expected key=value", v)
 		}
+		result[k] = val
 	}
 
-	return result
+	return result, nil
+}
+
+// applyVariables substitutes {{name}} tokens in content with values.
+// Unknown variables are left in place so the user can see what is missing.
+func applyVariables(content string, vars map[string]string) string {
+	if len(vars) == 0 {
+		return content
+	}
+	for k, v := range vars {
+		content = strings.ReplaceAll(content, "{{"+k+"}}", v)
+		content = strings.ReplaceAll(content, "{{ "+k+" }}", v)
+	}
+	return content
 }
 
 func init() {
