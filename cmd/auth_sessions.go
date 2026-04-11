@@ -36,18 +36,16 @@ func init() {
 	authSessionsCmd.AddCommand(authSessionsRevokeCmd)
 }
 
-// sessionDTO mirrors the shape we expect from GET /api/auth/cli/sessions.
+// sessionDTO mirrors the shape returned by GET /api/v1/auth/cli/sessions.
 // Unknown fields are ignored so the backend can evolve safely.
 type sessionDTO struct {
-	ID         string    `json:"id"`
-	DeviceName string    `json:"device_name"`
-	CreatedAt  time.Time `json:"created_at"`
-	LastUsedAt time.Time `json:"last_used_at"`
-	Current    bool      `json:"current"`
-}
-
-type sessionsResponse struct {
-	Sessions []sessionDTO `json:"sessions"`
+	ID                string    `json:"id"`
+	DeviceName        string    `json:"deviceName"`
+	AccessTokenPrefix string    `json:"accessTokenPrefix"`
+	Environment       string    `json:"environment"`
+	CreatedAt         time.Time `json:"createdAt"`
+	LastUsedAt        time.Time `json:"lastUsedAt"`
+	ExpiresAt         time.Time `json:"expiresAt"`
 }
 
 func runAuthSessionsList(cmd *cobra.Command, _ []string) error {
@@ -56,28 +54,24 @@ func runAuthSessionsList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	var out sessionsResponse
-	if err := c.Get("/api/auth/cli/sessions", &out); err != nil {
+	var sessions []sessionDTO
+	if err := c.Get("/api/v1/auth/cli/sessions", &sessions); err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
 
-	if len(out.Sessions) == 0 {
+	if len(sessions) == 0 {
 		fmt.Println("No active CLI sessions.")
 		return nil
 	}
 
-	fmt.Printf("%-20s  %-30s  %-20s  %-20s  %s\n", "ID", "DEVICE", "CREATED", "LAST USED", "")
-	for _, s := range out.Sessions {
-		marker := ""
-		if s.Current {
-			marker = "(current)"
-		}
-		fmt.Printf("%-20s  %-30s  %-20s  %-20s  %s\n",
+	fmt.Printf("%-20s  %-30s  %-12s  %-20s  %-20s\n", "ID", "DEVICE", "PREFIX", "CREATED", "LAST USED")
+	for _, s := range sessions {
+		fmt.Printf("%-20s  %-30s  %-12s  %-20s  %-20s\n",
 			truncateSession(s.ID, 20),
 			truncateSession(s.DeviceName, 30),
+			truncateSession(s.AccessTokenPrefix, 12),
 			formatTime(s.CreatedAt),
 			formatTime(s.LastUsedAt),
-			marker,
 		)
 	}
 	return nil
@@ -90,7 +84,7 @@ func runAuthSessionsRevoke(cmd *cobra.Command, args []string) error {
 	}
 	id := args[0]
 
-	if err := c.Delete("/api/auth/cli/sessions/"+id, nil); err != nil {
+	if err := c.Delete("/api/v1/auth/cli/sessions/"+id, nil); err != nil {
 		return fmt.Errorf("revoking session %q: %w", id, err)
 	}
 	fmt.Printf("Revoked session %q.\n", id)

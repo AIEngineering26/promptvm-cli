@@ -244,16 +244,29 @@ func saveOAuthProfile(profileName, baseURL string, tokens *oauth.TokenResponse) 
 		env = "staging"
 	}
 
+	var (
+		orgSlug   string
+		userID    string
+		userEmail string
+	)
+	if tokens.Organization != nil {
+		orgSlug = tokens.Organization.Slug
+	}
+	if tokens.User != nil {
+		userID = tokens.User.ID
+		userEmail = tokens.User.Email
+	}
+
 	profile := &config.Profile{
 		Name:         profileName,
 		AuthType:     config.AuthTypeOAuth,
 		BaseURL:      baseURL,
 		Environment:  env,
-		Organization: tokens.Organization,
+		Organization: orgSlug,
 		TokenRef:     "promptvm-cli:" + profileName,
 		ExpiresAt:    tokens.ExpiresAt,
-		UserID:       tokens.UserID,
-		UserEmail:    tokens.UserEmail,
+		UserID:       userID,
+		UserEmail:    userEmail,
 	}
 	if err := config.SaveProfile(profile); err != nil {
 		return fmt.Errorf("saving profile: %w", err)
@@ -269,11 +282,11 @@ func saveOAuthProfile(profileName, baseURL string, tokens *oauth.TokenResponse) 
 	}
 
 	fmt.Println()
-	if tokens.UserEmail != "" {
-		if tokens.Organization != "" {
-			fmt.Printf("✓ Authenticated as %s (%s)\n", tokens.UserEmail, tokens.Organization)
+	if userEmail != "" {
+		if orgSlug != "" {
+			fmt.Printf("✓ Authenticated as %s (%s)\n", userEmail, orgSlug)
 		} else {
-			fmt.Printf("✓ Authenticated as %s\n", tokens.UserEmail)
+			fmt.Printf("✓ Authenticated as %s\n", userEmail)
 		}
 	} else {
 		fmt.Println("✓ Authenticated")
