@@ -6,6 +6,7 @@ import (
 
 	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
 	"github.com/AIEngineering26/promptvm-go-sdk/option"
+	"github.com/AIEngineering26/promptvm-cli/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -46,7 +47,11 @@ func resolveAPIKey(cmd *cobra.Command) (string, error) {
 		return key, nil
 	}
 
-	// 3. Config file support will be added in PRD-002
+	// 3. Config file (active profile)
+	if profile := activeProfile(); profile != nil && profile.APIKey != "" {
+		return profile.APIKey, nil
+	}
+
 	return "", fmt.Errorf("API key required: set --api-key flag, %s env var, or run `promptvm auth login`", envAPIKey)
 }
 
@@ -61,5 +66,23 @@ func resolveBaseURL(cmd *cobra.Command) string {
 		return url
 	}
 
+	// 3. Config file (active profile)
+	if profile := activeProfile(); profile != nil && profile.BaseURL != "" {
+		return profile.BaseURL
+	}
+
 	return defaultBaseURL
+}
+
+// activeProfile loads the active profile from config, returning nil on any error.
+func activeProfile() *config.Profile {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	profile, err := cfg.ActiveProfileData()
+	if err != nil {
+		return nil
+	}
+	return profile
 }
