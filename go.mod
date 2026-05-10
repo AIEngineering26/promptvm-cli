@@ -2,6 +2,8 @@ module github.com/AIEngineering26/promptvm-cli
 
 go 1.25.6
 
+replace github.com/AIEngineering26/promptvm-go-sdk => ../go-sdk
+
 require (
 	github.com/AIEngineering26/promptvm-go-sdk v0.0.0-20260411200827-374e94e49b18
 	github.com/manifoldco/promptui v0.9.0

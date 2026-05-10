@@ -45,7 +45,9 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().String("api-key", "", "API key (overrides PROMPTVM_API_KEY env and config file)")
+	rootCmd.PersistentFlags().String("public-key", "", "API public key (pk_…); paired with --secret-key. Overrides PROMPTVM_PUBLIC_KEY env and config file")
+	rootCmd.PersistentFlags().String("secret-key", "", "API secret key (sk_…); paired with --public-key. Overrides PROMPTVM_SECRET_KEY env and config file")
+	rootCmd.PersistentFlags().String("api-key", "", "Combined API key in pk_xxx:sk_xxx form (DEPRECATED: prefer --public-key/--secret-key). Overrides PROMPTVM_API_KEY env and config file")
 	rootCmd.PersistentFlags().String("base-url", "", "API base URL (overrides PROMPTVM_BASE_URL env and config file)")
 	rootCmd.PersistentFlags().StringP("output", "o", "table", "Output format: table|json|yaml")
 	rootCmd.PersistentFlags().Bool("no-color", false, "Disable colored output")
