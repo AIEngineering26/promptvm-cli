@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -73,6 +74,17 @@ func PrintYAML(w io.Writer, data interface{}) error {
 	enc.SetIndent(2)
 	defer enc.Close()
 	return enc.Encode(data)
+}
+
+// IsInteractiveStdin reports whether stdin is connected to a TTY.
+// Destructive commands check this before showing an interactive
+// prompt so they can fail with a clear error in CI rather than
+// silently aborting on EOF.
+//
+// We resolve this through a package-level variable so tests can swap
+// in a fixed value without touching real file descriptors.
+var IsInteractiveStdin = func() bool {
+	return isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
 }
 
 // Confirm prompts the user for y/N confirmation via stderr.
