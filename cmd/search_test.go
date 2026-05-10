@@ -95,7 +95,9 @@ func runSearchCmd(t *testing.T, srvURL, format string, args []string) (string, e
 	cmd.Flags().StringP("output", "o", format, "Output format")
 	cmd.Flags().Bool("compact", false, "compact json")
 	cmd.Flags().Bool("no-header", false, "no header")
-	cmd.Flags().Bool("wide", false, "wide")
+	// `--wide` is now declared natively on the search command (F7
+	// review follow-up); the test harness no longer needs to register
+	// a stand-in.
 
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -169,7 +171,6 @@ func TestSearch_MissingOrg(t *testing.T) {
 	cmd.Flags().StringP("output", "o", "table", "Output format")
 	cmd.Flags().Bool("compact", false, "compact json")
 	cmd.Flags().Bool("no-header", false, "no header")
-	cmd.Flags().Bool("wide", false, "wide")
 
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -213,5 +214,50 @@ func TestSearch_RequiresQuery(t *testing.T) {
 	cmd := newSearchCmd()
 	if err := cmd.Args(cmd, []string{}); err == nil {
 		t.Error("expected ExactArgs(1) to reject missing query argument")
+	}
+}
+
+// TestSearch_WideSkipsTitleTruncation pins the --wide flag's behaviour.
+// Default rendering caps the NAME column at 60 chars; --wide must
+// surface the full title verbatim so users don't confuse two results
+// that share a 60-char prefix.
+func TestSearch_WideSkipsTitleTruncation(t *testing.T) {
+	const longBody = `{
+	  "query": "long",
+	  "ranking": "keyword",
+	  "took_ms": 1,
+	  "total_estimate": 1,
+	  "results": [
+	    {
+	      "kind": "prompt",
+	      "id": "pmt_long",
+	      "title": "A title that is deliberately longer than sixty characters so we can see truncation in action",
+	      "workspace_id": "ws_long",
+	      "directory_id": null,
+	      "updated_at": "2026-05-09T12:00:00Z",
+	      "score": 0.5,
+	      "highlights": []
+	    }
+	  ],
+	  "next_cursor": null
+	}`
+	srv := startSearchServer(t, 200, longBody)
+
+	// Default (no --wide): title is truncated.
+	defaultOut, err := runSearchCmd(t, srv.URL, "table", []string{"--org", "org_test", "long"})
+	if err != nil {
+		t.Fatalf("default RunE: %v\n%s", err, defaultOut)
+	}
+	if strings.Contains(defaultOut, "truncation in action") {
+		t.Errorf("default output should truncate the title, but the tail is present:\n%s", defaultOut)
+	}
+
+	// With --wide, the full title is present.
+	wideOut, err := runSearchCmd(t, srv.URL, "table", []string{"--org", "org_test", "--wide", "long"})
+	if err != nil {
+		t.Fatalf("--wide RunE: %v\n%s", err, wideOut)
+	}
+	if !strings.Contains(wideOut, "truncation in action") {
+		t.Errorf("--wide output should include the full title, got:\n%s", wideOut)
 	}
 }

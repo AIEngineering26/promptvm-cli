@@ -45,6 +45,13 @@ replay the original 2xx response for any subsequent retry within 24 hours.`,
 			}
 
 			if !yes {
+				if !output.IsInteractiveStdin() {
+					// Non-interactive (CI, piped stdin) without --yes
+					// would otherwise read EOF, treat it as "no" and
+					// silently abort. Be loud instead — the user
+					// almost certainly forgot the flag.
+					return fmt.Errorf("--yes is required when running non-interactively (stdin is not a TTY)")
+				}
 				prompt := fmt.Sprintf("Roll prompt %s back to v%d? A new version (copy of v%d) will become current.", promptID, toVersion, toVersion)
 				if !output.Confirm(prompt) {
 					fmt.Fprintln(cmd.OutOrStdout(), "Aborted.")

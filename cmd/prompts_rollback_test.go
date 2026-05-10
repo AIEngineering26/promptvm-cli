@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/AIEngineering26/promptvm-cli/internal/output"
 )
 
 // TestPromptsRollbackRegistered verifies the rollback subcommand is wired
@@ -217,5 +219,51 @@ func TestRollback_SDKErrorPropagates(t *testing.T) {
 		[]string{"--to", "1", "--yes", "pmt_abc"})
 	if err == nil {
 		t.Fatal("expected SDK error to propagate")
+	}
+}
+
+// TestRollback_NonInteractiveWithoutYesErrors exercises the TTY guard:
+// when stdin is not a TTY (CI, piped script) and --yes is absent, the
+// command must surface a clear error rather than silently aborting on
+// stdin EOF.
+func TestRollback_NonInteractiveWithoutYesErrors(t *testing.T) {
+	// Force the TTY check to report non-interactive.
+	prev := output.IsInteractiveStdin
+	output.IsInteractiveStdin = func() bool { return false }
+	t.Cleanup(func() { output.IsInteractiveStdin = prev })
+
+	// We never reach the SDK call, but the runRollbackCmd helper still
+	// expects a base URL to wire withTestEnv.
+	srv, captured := startRollbackServer(t, 200, fakeRollbackBody)
+
+	_, err := runRollbackCmd(t, srv.URL, "json",
+		[]string{"--to", "1", "pmt_abc"})
+	if err == nil {
+		t.Fatal("expected error when stdin is not a TTY and --yes is absent")
+	}
+	if !strings.Contains(err.Error(), "--yes is required") {
+		t.Errorf("error should mention --yes, got: %v", err)
+	}
+	// Sanity: the SDK was NOT called when the TTY guard fired.
+	if captured.method != "" {
+		t.Errorf("expected no upstream call, but got %s %s", captured.method, captured.path)
+	}
+}
+
+// TestRollback_NonInteractiveWithYesProceeds confirms the TTY guard
+// is gated on --yes — passing --yes lets a non-TTY caller through.
+func TestRollback_NonInteractiveWithYesProceeds(t *testing.T) {
+	prev := output.IsInteractiveStdin
+	output.IsInteractiveStdin = func() bool { return false }
+	t.Cleanup(func() { output.IsInteractiveStdin = prev })
+
+	srv, captured := startRollbackServer(t, 200, fakeRollbackBody)
+	_, err := runRollbackCmd(t, srv.URL, "json",
+		[]string{"--to", "1", "--yes", "pmt_abc"})
+	if err != nil {
+		t.Fatalf("--yes should bypass the TTY guard: %v", err)
+	}
+	if captured.method != http.MethodPost {
+		t.Errorf("expected upstream POST when --yes is passed, got %q", captured.method)
 	}
 }
