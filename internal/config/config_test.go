@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -192,6 +194,178 @@ func TestMaskAPIKey(t *testing.T) {
 		got := MaskAPIKey(tt.input)
 		if got != tt.want {
 			t.Errorf("MaskAPIKey(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestLoadProfile_MigratesLegacyAPIKey covers PRD F3 §US-003: when a
+// profile file on disk uses the legacy single-string `api_key: pk:sk`
+// shape, LoadProfile splits it into `public_key` + `secret_key` on
+// first load and rewrites the file in-place.
+func TestLoadProfile_MigratesLegacyAPIKey(t *testing.T) {
+	dir, cleanup := setupTestDir(t)
+	defer cleanup()
+
+	const (
+		pk = "pk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		sk = "sk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+
+	// Hand-craft a legacy-shape profile YAML on disk.
+	profilePath := filepath.Join(dir, "profiles", "legacy.yaml")
+	if err := os.MkdirAll(filepath.Dir(profilePath), 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	legacyYAML := []byte(`name: legacy
+api_key: ` + pk + ":" + sk + `
+base_url: https://api.promptvm.com
+environment: live
+`)
+	if err := os.WriteFile(profilePath, legacyYAML, 0600); err != nil {
+		t.Fatalf("write legacy profile: %v", err)
+	}
+
+	loaded, err := LoadProfile("legacy")
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	if loaded.PublicKey != pk {
+		t.Errorf("PublicKey = %q, want %q", loaded.PublicKey, pk)
+	}
+	if loaded.SecretKey != sk {
+		t.Errorf("SecretKey = %q, want %q", loaded.SecretKey, sk)
+	}
+	if loaded.APIKey != "" {
+		t.Errorf("legacy APIKey field should be cleared after migration, got %q", loaded.APIKey)
+	}
+
+	// Verify the file on disk was rewritten in dual-key form.
+	rewritten, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("read after migrate: %v", err)
+	}
+	got := string(rewritten)
+	if !strings.Contains(got, "public_key: "+pk) {
+		t.Errorf("rewritten profile missing public_key field: %s", got)
+	}
+	if !strings.Contains(got, "secret_key: "+sk) {
+		t.Errorf("rewritten profile missing secret_key field: %s", got)
+	}
+	if strings.Contains(got, "api_key:") && !strings.Contains(got, "api_key: \"\"") {
+		// The yaml encoder will omit the empty field thanks to
+		// `omitempty`; but be defensive.
+		if !strings.Contains(got, "api_key: \n") {
+			// allow only if it really is omitted — make sure the original
+			// pk:sk string isn't still present as a value.
+			if strings.Contains(got, pk+":"+sk) {
+				t.Errorf("rewritten profile still contains legacy combined api_key: %s", got)
+			}
+		}
+	}
+
+	// Re-load: a second migration must not be triggered.
+	loaded2, err := LoadProfile("legacy")
+	if err != nil {
+		t.Fatalf("LoadProfile second pass: %v", err)
+	}
+	if loaded2.APIKey != "" {
+		t.Errorf("APIKey reappeared after second load: %q", loaded2.APIKey)
+	}
+
+	// File permissions stay 0600 on POSIX.
+	info, err := os.Stat(profilePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("file perm after migration = %o, want 0600", perm)
+	}
+}
+
+// TestLoadProfile_MigrationFailureIsNonFatal covers PRD F3 §US-003: if
+// the rewrite cannot be performed (read-only directory, etc.), the
+// in-memory profile still carries the split values and the user gets a
+// warning but their session continues.
+func TestLoadProfile_MigrationFailureIsNonFatal(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("read-only directory test does not work as root")
+	}
+	dir, cleanup := setupTestDir(t)
+	defer cleanup()
+
+	const (
+		pk = "pk_cccccccccccccccccccccccccccccccccccccccc"
+		sk = "sk_dddddddddddddddddddddddddddddddddddddddd"
+	)
+
+	profilesPath := filepath.Join(dir, "profiles")
+	if err := os.MkdirAll(profilesPath, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	profilePath := filepath.Join(profilesPath, "ro.yaml")
+	legacyYAML := []byte(`name: ro
+api_key: ` + pk + ":" + sk + "\n")
+	if err := os.WriteFile(profilePath, legacyYAML, 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// Make the parent directory read-only so the atomic-write rename
+	// step fails. The temp file creation itself fails first, which is
+	// what triggers the warning path.
+	if err := os.Chmod(profilesPath, 0500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(profilesPath, 0700) })
+
+	var buf bytes.Buffer
+	prev := migrationWarnWriter
+	migrationWarnWriter = &buf
+	t.Cleanup(func() { migrationWarnWriter = prev })
+
+	loaded, err := LoadProfile("ro")
+	if err != nil {
+		t.Fatalf("LoadProfile should succeed despite write failure: %v", err)
+	}
+	if loaded.PublicKey != pk || loaded.SecretKey != sk {
+		t.Errorf("in-memory split lost: pk=%q sk=%q", loaded.PublicKey, loaded.SecretKey)
+	}
+	if !strings.Contains(buf.String(), "Warning") {
+		t.Errorf("expected migration-failure warning, got %q", buf.String())
+	}
+}
+
+// TestAtomicWriteFile verifies the helper writes data and applies the
+// requested permissions, never leaving partial content visible at the
+// final path.
+func TestAtomicWriteFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "secret.yaml")
+	payload := []byte("secret_key: sk_xxxxxxxx\n")
+
+	if err := atomicWriteFile(target, payload, 0600); err != nil {
+		t.Fatalf("atomicWriteFile: %v", err)
+	}
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("payload mismatch: got %q want %q", got, payload)
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("perm = %o, want 0600", perm)
+	}
+
+	// No leftover .tmp files in the directory.
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp") {
+			t.Errorf("leftover temp file %q", e.Name())
 		}
 	}
 }

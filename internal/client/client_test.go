@@ -281,6 +281,50 @@ func TestResolveCredentials_EnvPartialErrors(t *testing.T) {
 	}
 }
 
+// TestResolveCredentials_PartialDualEnvBeatsAPIKey verifies that a
+// half-set dual env pair (PROMPTVM_PUBLIC_KEY without PROMPTVM_SECRET_KEY,
+// or vice versa) errors loudly instead of silently falling through to a
+// fully-set PROMPTVM_API_KEY. This is the safety property called out in
+// PRD F3 §US-002 — half-configured env should never be papered over.
+func TestResolveCredentials_PartialDualEnvBeatsAPIKey(t *testing.T) {
+	cases := []struct {
+		name string
+		set  func(*testing.T)
+		want string
+	}{
+		{
+			name: "only PUBLIC set + API_KEY fallback present",
+			set: func(t *testing.T) {
+				t.Setenv("PROMPTVM_PUBLIC_KEY", testPK)
+				t.Setenv("PROMPTVM_API_KEY", testPK+":"+testSK)
+			},
+			want: "PROMPTVM_SECRET_KEY",
+		},
+		{
+			name: "only SECRET set + API_KEY fallback present",
+			set: func(t *testing.T) {
+				t.Setenv("PROMPTVM_SECRET_KEY", testSK)
+				t.Setenv("PROMPTVM_API_KEY", testPK+":"+testSK)
+			},
+			want: "PROMPTVM_PUBLIC_KEY",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetEnv(t)
+			tc.set(t)
+			cmd := newRootCmdWithFlags()
+			creds, err := ResolveCredentials(cmd)
+			if err == nil {
+				t.Fatalf("expected partial-dual-env error, got creds=%+v", creds)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name missing var %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
 // TestResolveCredentials_Missing exercises the "no credentials anywhere"
 // error path so users get the documented hint.
 func TestResolveCredentials_Missing(t *testing.T) {

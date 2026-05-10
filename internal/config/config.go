@@ -2,9 +2,12 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -236,7 +239,20 @@ func (c *Config) SetActiveProfile(name string) error {
 	return c.Save()
 }
 
-// LoadProfile reads a profile by name from disk.
+// migrationWarnWriter is the destination for migration warning messages
+// (non-fatal disk-failure paths). Tests swap this out so they can assert
+// on emitted output. Defaults to os.Stderr.
+var migrationWarnWriter io.Writer = os.Stderr
+
+// LoadProfile reads a profile by name from disk. If the profile is in
+// the legacy single-string `api_key: pk:sk` shape and there are no
+// `public_key`/`secret_key` fields, LoadProfile transparently splits
+// the credential and rewrites the file atomically with the dual-key
+// fields populated.
+//
+// A migration write failure (disk full, perms, read-only FS) is
+// non-fatal: a warning is logged and the in-memory Profile carries the
+// split values for the duration of the session. The next start retries.
 func LoadProfile(name string) (*Profile, error) {
 	path, err := profilePath(name)
 	if err != nil {
@@ -255,10 +271,62 @@ func LoadProfile(name string) (*Profile, error) {
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return nil, fmt.Errorf("parsing profile %q: %w", name, err)
 	}
+
+	// Migrate legacy `api_key: pk:sk` profiles to the dual-key shape.
+	if migrateLegacyAPIKey(&p) {
+		if err := SaveProfile(&p); err != nil {
+			fmt.Fprintf(migrationWarnWriter,
+				"Warning: failed to migrate profile %q to dual-key form (%v). "+
+					"Continuing with in-memory split for this session.\n",
+				name, err)
+		}
+	}
 	return &p, nil
 }
 
-// SaveProfile writes a profile to disk with 0600 permissions.
+// migrateLegacyAPIKey detects the legacy `api_key: pk_xxx:sk_xxx` shape
+// (no `public_key`/`secret_key` fields populated) and splits the
+// combined value into the new fields. Returns true if a migration was
+// performed (caller should persist), false otherwise.
+//
+// Profiles using a non-pk:sk legacy bearer token (e.g. older `pvk_…`
+// long-lived keys) are left unchanged — they're handled by the bearer
+// fallback in client.ResolveCredentials.
+func migrateLegacyAPIKey(p *Profile) bool {
+	if p == nil {
+		return false
+	}
+	if p.IsOAuth() {
+		return false
+	}
+	if p.PublicKey != "" || p.SecretKey != "" {
+		return false
+	}
+	if p.APIKey == "" {
+		return false
+	}
+	parts := strings.Split(p.APIKey, ":")
+	if len(parts) != 2 {
+		return false
+	}
+	pk, sk := parts[0], parts[1]
+	if !strings.HasPrefix(pk, "pk_") || !strings.HasPrefix(sk, "sk_") {
+		return false
+	}
+	p.PublicKey = pk
+	p.SecretKey = sk
+	// Clear the legacy combined field so future loads don't keep
+	// re-running the migration. The new fields are the canonical home.
+	p.APIKey = ""
+	return true
+}
+
+// SaveProfile writes a profile to disk atomically, with 0600
+// permissions on POSIX systems (best-effort on Windows).
+//
+// Atomic write semantics: the YAML is written to a sibling .tmp file,
+// fsync'd, and renamed over the destination. A partial profile file is
+// never observable to a concurrent reader.
 func SaveProfile(p *Profile) error {
 	path, err := profilePath(p.Name)
 	if err != nil {
@@ -275,7 +343,54 @@ func SaveProfile(p *Profile) error {
 		return fmt.Errorf("marshaling profile: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0600)
+	return atomicWriteFile(path, data, 0600)
+}
+
+// atomicWriteFile writes data to path atomically: it creates a sibling
+// `<path>.tmp` file with the requested permissions, writes the bytes,
+// fsyncs both the file and its parent directory, then renames over the
+// final destination. On Windows the chmod is best-effort because NTFS
+// does not honor POSIX permission bits; the rename is still atomic on
+// the same volume.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	// On any failure path, do our best to clean up the temp file.
+	cleanup := func() { _ = os.Remove(tmpPath) }
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("syncing temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+	// Apply the requested perm. On Windows this is best-effort.
+	if err := os.Chmod(tmpPath, perm); err != nil && runtime.GOOS != "windows" {
+		cleanup()
+		return fmt.Errorf("chmod temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanup()
+		return fmt.Errorf("renaming temp file: %w", err)
+	}
+	// fsync the directory so the rename is durable.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nil
 }
 
 // DeleteProfile removes a profile file from disk.
