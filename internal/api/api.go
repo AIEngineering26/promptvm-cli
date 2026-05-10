@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/AIEngineering26/promptvm-cli/internal/client"
 	"github.com/AIEngineering26/promptvm-cli/internal/config"
 	"github.com/AIEngineering26/promptvm-cli/internal/oauth"
 	"github.com/spf13/cobra"
@@ -17,15 +18,27 @@ import (
 
 const (
 	defaultBaseURL = "https://api.promptvm.com"
-	envAPIKey      = "PROMPTVM_API_KEY"
 	envBaseURL     = "PROMPTVM_BASE_URL"
 )
 
 // Caller makes raw HTTP requests to the API for endpoints where the SDK
 // does not decode response bodies. It carries the active profile so it
 // can transparently refresh OAuth tokens on 401 responses.
+//
+// For api-key profiles the Caller stores the public/secret key pair and
+// emits dual headers (X-PromptVM-Public-Key + X-PromptVM-Secret-Key) on
+// each request. For OAuth profiles only BearerToken is set, sent as
+// Authorization: Bearer <token>.
 type Caller struct {
-	APIKey  string
+	// APIKey is the legacy "pk_xxx:sk_xxx" form, retained for tests and
+	// callers that want to inspect a single string. New code should rely
+	// on PublicKey/SecretKey/BearerToken instead.
+	APIKey string
+
+	PublicKey   string
+	SecretKey   string
+	BearerToken string
+
 	BaseURL string
 
 	// profile is set when the caller was resolved from the active config
@@ -34,32 +47,17 @@ type Caller struct {
 }
 
 // NewFromContext creates a Caller from CLI flags, environment, and the
-// active config profile. Resolution order for the token is:
+// active config profile.
 //
-//	flag → env var → active profile (OAuth access token or API key) → default
+// Credential resolution mirrors internal/client.ResolveCredentials so the
+// SDK and the raw HTTP path always agree on which key set to use.
 func NewFromContext(cmd *cobra.Command) (*Caller, error) {
-	profile := activeProfile()
+	creds, err := client.ResolveCredentials(cmd)
+	if err != nil {
+		return nil, err
+	}
 
-	apiKey := resolveFlag(cmd, "api-key")
-	if apiKey == "" {
-		apiKey = os.Getenv(envAPIKey)
-	}
-	if apiKey == "" && profile != nil {
-		if profile.IsOAuth() {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			tok, err := oauth.AccessTokenForProfile(ctx, profile)
-			if err != nil {
-				return nil, err
-			}
-			apiKey = tok
-		} else {
-			apiKey = profile.APIKey
-		}
-	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("API key required: set --api-key flag, %s env var, or run `promptvm auth login`", envAPIKey)
-	}
+	profile := activeProfile()
 
 	baseURL := resolveFlag(cmd, "base-url")
 	if baseURL == "" {
@@ -72,7 +70,16 @@ func NewFromContext(cmd *cobra.Command) (*Caller, error) {
 		baseURL = defaultBaseURL
 	}
 
-	return &Caller{APIKey: apiKey, BaseURL: baseURL, profile: profile}, nil
+	c := &Caller{BaseURL: baseURL, profile: profile}
+	if creds.IsAPIKey() {
+		c.PublicKey = creds.PublicKey
+		c.SecretKey = creds.SecretKey
+		c.APIKey = creds.PublicKey + ":" + creds.SecretKey
+	} else {
+		c.BearerToken = creds.BearerToken
+		c.APIKey = creds.BearerToken
+	}
+	return c, nil
 }
 
 // activeProfile loads the active profile, returning nil on any error.
@@ -143,6 +150,7 @@ func (c *Caller) withAutoRefresh(fn func() error) error {
 	if refreshErr != nil {
 		return fmt.Errorf("auto-refresh failed: %w (original: %v)", refreshErr, err)
 	}
+	c.BearerToken = tok
 	c.APIKey = tok
 	return fn()
 }
@@ -167,7 +175,20 @@ func (c *Caller) mutate(method, path string, body interface{}, result interface{
 }
 
 func (c *Caller) do(req *http.Request, result interface{}) error {
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	// Api-key credentials use dual headers
+	// (X-PromptVM-Public-Key + X-PromptVM-Secret-Key); OAuth profiles
+	// use Authorization: Bearer <jwt>. The two paths are mutually
+	// exclusive.
+	if c.PublicKey != "" && c.SecretKey != "" {
+		req.Header.Set("X-PromptVM-Public-Key", c.PublicKey)
+		req.Header.Set("X-PromptVM-Secret-Key", c.SecretKey)
+	} else if c.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	} else if c.APIKey != "" {
+		// Legacy fallback for tests that construct &Caller{APIKey: …}
+		// directly without setting the explicit fields.
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -194,6 +215,13 @@ func (c *Caller) do(req *http.Request, result interface{}) error {
 }
 
 func resolveFlag(cmd *cobra.Command, name string) string {
+	// Try the merged flag set first (includes inherited persistent flags
+	// when the command is wired through cobra normally), then fall back to
+	// the root's persistent flag set for cases where Flags() hasn't been
+	// merged yet.
+	if val, err := cmd.Flags().GetString(name); err == nil && val != "" {
+		return val
+	}
 	val, _ := cmd.Root().PersistentFlags().GetString(name)
 	return val
 }

@@ -51,13 +51,17 @@ type Defaults struct {
 // Profile represents a named authentication profile.
 //
 // Profiles support two authentication modes selected by AuthType:
-//   - "api_key" (legacy): the long-lived API key is stored in APIKey.
+//   - "api_key" (legacy): the credential pair (PublicKey + SecretKey) is
+//     stored explicitly. The combined APIKey field is retained for
+//     backward compatibility with profiles written by older CLI builds.
 //   - "oauth" (SSO): no access/refresh tokens live in this file; tokens
 //     are stored in the OS keychain keyed by TokenRef. Only metadata
 //     (expiry, user id/email) is persisted here.
 type Profile struct {
 	Name         string `yaml:"name"`
 	APIKey       string `yaml:"api_key,omitempty"`
+	PublicKey    string `yaml:"public_key,omitempty"`
+	SecretKey    string `yaml:"secret_key,omitempty"`
 	BaseURL      string `yaml:"base_url"`
 	Environment  string `yaml:"environment"`
 	Organization string `yaml:"organization,omitempty"`

@@ -35,7 +35,6 @@ func init() {
 func newApikeysListCmd() *cobra.Command {
 	var (
 		status string
-		env    string
 	)
 
 	cmd := &cobra.Command{
@@ -55,13 +54,6 @@ func newApikeysListCmd() *cobra.Command {
 				}
 				req.Status = s.Ptr()
 			}
-			if env != "" {
-				e, err := sdk.NewListAPIKeysRequestEnvironmentFromString(env)
-				if err != nil {
-					return err
-				}
-				req.Environment = e.Ptr()
-			}
 
 			resp, err := c.APIKeys.ListAPIKeys(cmd.Context(), req)
 			if err != nil {
@@ -69,16 +61,16 @@ func newApikeysListCmd() *cobra.Command {
 			}
 
 			return output.Print(cmd, resp, func(w io.Writer) error {
-				return output.Table(w, []string{"ID", "NAME", "PUBLIC KEY", "STATUS", "ENV", "SCOPES", "CREATED"}, func(tw *tabwriter.Writer) {
+				return output.Table(w, []string{"ID", "NAME", "PUBLIC KEY", "STATUS", "SCOPES", "CREATED"}, func(tw *tabwriter.Writer) {
 					for _, k := range resp.GetData() {
 						name := "-"
 						if k.GetName() != nil {
 							name = *k.GetName()
 						}
 						scopes := scopeStrings(k.GetScopes())
-						fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+						fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 							k.GetID(), name, k.GetPublicKey(),
-							string(k.GetStatus()), string(k.GetEnvironment()),
+							string(k.GetStatus()),
 							scopes, output.HumanTime(k.GetCreatedAt()))
 					}
 				})
@@ -87,7 +79,6 @@ func newApikeysListCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&status, "status", "", "Filter by status: active|revoked")
-	cmd.Flags().StringVar(&env, "env", "", "Filter by environment: live|test")
 	return cmd
 }
 
@@ -97,7 +88,6 @@ func newApikeysCreateCmd() *cobra.Command {
 	var (
 		name      string
 		scopes    string
-		env       string
 		expiresAt string
 	)
 
@@ -125,16 +115,9 @@ func newApikeysCreateCmd() *cobra.Command {
 				sdkScopes = append(sdkScopes, scope)
 			}
 
-			// Parse environment
-			environment, err := sdk.NewCreateAPIKeyRequestEnvironmentFromString(env)
-			if err != nil {
-				return err
-			}
-
 			req := &sdk.CreateAPIKeyRequest{
-				Name:        name,
-				Scopes:      sdkScopes,
-				Environment: environment,
+				Name:   name,
+				Scopes: sdkScopes,
 			}
 
 			if expiresAt != "" {
@@ -164,7 +147,6 @@ func newApikeysCreateCmd() *cobra.Command {
 				scopeStrs[i] = string(s)
 			}
 			printField(cmd, "Scopes", strings.Join(scopeStrs, ", "))
-			printField(cmd, "Environment", string(resp.GetEnvironment()))
 
 			fmt.Fprintln(cmd.OutOrStdout())
 			fmt.Fprintln(os.Stderr, output.Warn("The secret key will not be shown again. Store it securely."))
@@ -175,7 +157,6 @@ func newApikeysCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "API key name (required)")
 	cmd.MarkFlagRequired("name")
 	cmd.Flags().StringVar(&scopes, "scopes", "read", "Comma-separated scopes: read,write,delete,admin")
-	cmd.Flags().StringVar(&env, "env", "live", "Environment: live|test")
 	cmd.Flags().StringVar(&expiresAt, "expires", "", "Expiration date (RFC3339)")
 	return cmd
 }
@@ -214,7 +195,6 @@ func newApikeysGetCmd() *cobra.Command {
 			}
 			printField(cmd, "Public Key", d.GetPublicKey())
 			printField(cmd, "Status", string(d.GetStatus()))
-			printField(cmd, "Environment", string(d.GetEnvironment()))
 			getScopes := make([]string, len(d.GetScopes()))
 			for i, s := range d.GetScopes() {
 				getScopes[i] = string(s)

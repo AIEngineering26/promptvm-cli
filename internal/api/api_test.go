@@ -9,12 +9,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// The Caller reads flags via cmd.Root().PersistentFlags(), so the test
-// command needs to be wrapped in a fake root with those persistent flags.
+// Mirrors internal/client.newRootCmdWithFlags so flag-resolution tests
+// here read flags the same way ResolveCredentials does.
 func newRootCmdWithFlags() *cobra.Command {
 	root := &cobra.Command{Use: "promptvm"}
-	root.PersistentFlags().String("api-key", "", "")
-	root.PersistentFlags().String("base-url", "", "")
+	root.Flags().String("public-key", "", "")
+	root.Flags().String("secret-key", "", "")
+	root.Flags().String("api-key", "", "")
+	root.Flags().String("base-url", "", "")
 	return root
 }
 
@@ -33,20 +35,24 @@ func TestNewFromContext_RequiresAPIKey(t *testing.T) {
 
 func TestNewFromContext_FromFlag(t *testing.T) {
 	t.Setenv("PROMPTVM_API_KEY", "")
+	t.Setenv("PROMPTVM_PUBLIC_KEY", "")
+	t.Setenv("PROMPTVM_SECRET_KEY", "")
 	t.Setenv("PROMPTVM_BASE_URL", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 
 	cmd := newRootCmdWithFlags()
-	_ = cmd.PersistentFlags().Set("api-key", "pvk_test_1234")
-	_ = cmd.PersistentFlags().Set("base-url", "http://example.test")
+	// Combined --api-key flag is the deprecated path but still supported per
+	// F2 §US-001 layer 2. Must split into pk:sk in dual-header form on the wire.
+	_ = cmd.Flags().Set("api-key", "pk_test_1234:sk_test_5678")
+	_ = cmd.Flags().Set("base-url", "http://example.test")
 
 	c, err := NewFromContext(cmd)
 	if err != nil {
 		t.Fatalf("NewFromContext: %v", err)
 	}
-	if c.APIKey != "pvk_test_1234" {
-		t.Errorf("APIKey = %q, want %q", c.APIKey, "pvk_test_1234")
+	if c.PublicKey != "pk_test_1234" || c.SecretKey != "sk_test_5678" {
+		t.Errorf("creds = (%q, %q), want (pk_test_1234, sk_test_5678)", c.PublicKey, c.SecretKey)
 	}
 	if c.BaseURL != "http://example.test" {
 		t.Errorf("BaseURL = %q, want %q", c.BaseURL, "http://example.test")
@@ -54,7 +60,10 @@ func TestNewFromContext_FromFlag(t *testing.T) {
 }
 
 func TestNewFromContext_FromEnv(t *testing.T) {
-	t.Setenv("PROMPTVM_API_KEY", "pvk_live_envkey")
+	// Dual env-var path (F2 §US-001 layer 3 — long-term supported, silent).
+	t.Setenv("PROMPTVM_API_KEY", "")
+	t.Setenv("PROMPTVM_PUBLIC_KEY", "pk_live_env")
+	t.Setenv("PROMPTVM_SECRET_KEY", "sk_live_env")
 	t.Setenv("PROMPTVM_BASE_URL", "http://env.example")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
@@ -64,11 +73,30 @@ func TestNewFromContext_FromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFromContext: %v", err)
 	}
-	if c.APIKey != "pvk_live_envkey" {
-		t.Errorf("APIKey = %q", c.APIKey)
+	if c.PublicKey != "pk_live_env" || c.SecretKey != "sk_live_env" {
+		t.Errorf("creds = (%q, %q), want (pk_live_env, sk_live_env)", c.PublicKey, c.SecretKey)
 	}
 	if c.BaseURL != "http://env.example" {
 		t.Errorf("BaseURL = %q", c.BaseURL)
+	}
+}
+
+func TestNewFromContext_FromCombinedEnv(t *testing.T) {
+	// Combined PROMPTVM_API_KEY env var (F2 §US-001 layer 4 — silent backward-compat).
+	t.Setenv("PROMPTVM_PUBLIC_KEY", "")
+	t.Setenv("PROMPTVM_SECRET_KEY", "")
+	t.Setenv("PROMPTVM_API_KEY", "pk_live_envkey:sk_live_envsecret")
+	t.Setenv("PROMPTVM_BASE_URL", "http://env.example")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	cmd := newRootCmdWithFlags()
+	c, err := NewFromContext(cmd)
+	if err != nil {
+		t.Fatalf("NewFromContext: %v", err)
+	}
+	if c.PublicKey != "pk_live_envkey" || c.SecretKey != "sk_live_envsecret" {
+		t.Errorf("creds = (%q, %q), want (pk_live_envkey, sk_live_envsecret)", c.PublicKey, c.SecretKey)
 	}
 }
 
