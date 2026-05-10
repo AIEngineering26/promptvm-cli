@@ -23,6 +23,8 @@ func TestRootCommandWired(t *testing.T) {
 		"resources",
 		"share",
 		"apikeys",
+		"contexts",
+		"search",
 		"completion",
 		"version",
 	}
@@ -43,7 +45,7 @@ func TestRootCommandWired(t *testing.T) {
 func TestPromptsSubcommands(t *testing.T) {
 	want := []string{
 		"list", "create", "get", "update", "delete",
-		"resolve", "export", "fork", "move",
+		"resolve", "export", "fork", "move", "rollback",
 		"references", "dependents", "versions",
 	}
 

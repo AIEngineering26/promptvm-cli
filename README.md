@@ -171,6 +171,12 @@ promptvm prompts versions list pmt_abc123
 promptvm prompts versions create pmt_abc123 --content "..."
 promptvm prompts versions get pmt_abc123 v_456
 
+# Rollback to a previous version (creates a new version that's a copy of the
+# target and atomically advances the prompt's "current" pointer to it).
+# Confirmation is interactive unless --yes is passed.
+promptvm prompts rollback pmt_abc123 --to 1 --yes
+promptvm prompts rollback pmt_abc123 --to 2 --idempotency-key $(uuidgen)
+
 # Refs and dependents
 promptvm prompts references pmt_abc123
 promptvm prompts dependents pmt_abc123
@@ -179,6 +185,26 @@ promptvm prompts dependents pmt_abc123
 promptvm prompts move pmt_abc123 --directory dir_1
 promptvm prompts fork pmt_abc123 --name "Copy"
 promptvm prompts export pmt_abc123 --format md > prompt.md
+```
+
+### Contexts
+
+```bash
+# Discover the catalogue of context kinds the platform supports
+# (e.g. prompt, skill). Use -o json or -o yaml for the full payload,
+# including metadata, content, and file specs.
+promptvm contexts list
+promptvm contexts list -o json
+```
+
+### Search
+
+```bash
+# Org-wide search returns a table with name, kind, workspace, score, id.
+# --org may be omitted if a profile-default organization is set.
+promptvm search "support reply" --org org_abc
+promptvm search "embeddings" --kind prompt --limit 50
+promptvm search "onboarding" --workspace ws_123 -o json
 ```
 
 ### Workspaces and Organizations
