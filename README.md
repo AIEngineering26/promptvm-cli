@@ -63,13 +63,27 @@ Prints a short user code and a URL you open on another device (RFC 8628). Prompt
 
 The CLI automatically suggests `--device` if it detects an SSH session, `CI=true`, or a GitHub Codespace.
 
-### Legacy API key (unchanged)
+### API key login (long-lived credentials)
+
+The dashboard issues a **public key** (`pk_…`) and a **secret key** (`sk_…`) as a pair. Pass them as separate flags — this is the canonical form for non-interactive use:
 
 ```bash
-promptvm auth login --api-key pk_live_...
+promptvm auth login --public-key pk_live_... --secret-key sk_live_...
 ```
 
-For scripts and environments that need a long-lived key. Works exactly as before; stored under the same profile system.
+If you only pass `--public-key`, the CLI prompts for the matching secret with hidden input so the value never lands in your shell history:
+
+```bash
+promptvm auth login --public-key pk_live_...
+# → Enter your secret key (sk_…):  ************
+```
+
+The legacy combined form is still accepted but **deprecated** and prints a stderr warning:
+
+```bash
+promptvm auth login --api-key pk_live_...:sk_live_...
+# Warning: --api-key is deprecated; use --public-key/--secret-key
+```
 
 ### Other flags
 
@@ -81,20 +95,36 @@ promptvm auth login --base-url https://...   # custom API base URL
 ### Status, sessions, logout
 
 ```bash
-promptvm auth status                 # show auth type (OAuth vs API key), user, expiry
+promptvm auth status                 # show auth type (api-key|oauth), public-key prefix, org, base URL
+promptvm auth status -o json         # same fields machine-readably (no secret_key field present)
 promptvm auth sessions list          # list your active server-side CLI tokens
 promptvm auth sessions revoke <id>   # revoke a session remotely (e.g. lost device)
 promptvm auth logout                 # remove active profile AND keychain tokens
 promptvm auth logout --all           # scrub every profile
 ```
 
-The CLI reads credentials in this order:
+`auth status` never prints the secret key — not whole, not truncated, not redacted-with-asterisks. The public key is shown as a 12-character prefix (`pk_554f77dcd…`).
 
-1. `--api-key` flag
-2. `PROMPTVM_API_KEY` environment variable
-3. The active profile in `~/.config/promptvm/config.yaml` (OAuth access token is loaded from the keychain and transparently refreshed when expired)
+### Credential resolution order
+
+The CLI walks this precedence table on every command (first match wins):
+
+1. `--public-key` + `--secret-key` flags (both required together)
+2. `--api-key pk_…:sk_…` flag (deprecated; emits stderr warning)
+3. `PROMPTVM_PUBLIC_KEY` + `PROMPTVM_SECRET_KEY` env vars (silent, long-term)
+4. `PROMPTVM_API_KEY=pk_…:sk_…` env var (silent, backward-compat)
+5. The active profile in `~/.config/promptvm/config.yaml` (api-key)
+6. The active profile (OAuth — access token loaded from the keychain, refreshed transparently)
+
+Setting only one half of a dual env pair (e.g. `PROMPTVM_PUBLIC_KEY` without `PROMPTVM_SECRET_KEY`) is a fatal error — the CLI **never** silently falls through to a single-string `PROMPTVM_API_KEY` when the dual pair is half-configured.
 
 Switch profiles with `promptvm profile use <name>`.
+
+### Profile storage
+
+Profile YAML files at `~/.config/promptvm/profiles/<name>.yaml` are written atomically (temp + fsync + rename) with `0600` permissions on POSIX. On Windows the chmod is best-effort because NTFS does not honor POSIX permission bits; the rename step is still atomic on the same volume.
+
+Profiles created by older CLI builds in the legacy `api_key: pk_…:sk_…` form are migrated transparently on first load — the file is rewritten with separate `public_key:` and `secret_key:` fields. If the rewrite fails (read-only FS, full disk), the CLI logs a warning and continues with the in-memory split for that session.
 
 ---
 
@@ -266,7 +296,9 @@ promptvm prompts list --no-color
 
 | Variable               | Purpose                                                          |
 |------------------------|------------------------------------------------------------------|
-| `PROMPTVM_API_KEY`     | API key used when no `--api-key` flag is given                   |
+| `PROMPTVM_PUBLIC_KEY`  | API public key (`pk_…`); paired with `PROMPTVM_SECRET_KEY`       |
+| `PROMPTVM_SECRET_KEY`  | API secret key (`sk_…`); paired with `PROMPTVM_PUBLIC_KEY`       |
+| `PROMPTVM_API_KEY`     | Legacy combined `pk_…:sk_…` form (silent backward-compat)        |
 | `PROMPTVM_BASE_URL`    | Override the API base URL (staging, self-host)                   |
 | `PROMPTVM_APP_URL`     | Override the web app URL used by `auth login` (derived otherwise)|
 | `PROMPTVM_HEADLESS`    | Set to `1` to force `auth login` into the device-code flow       |

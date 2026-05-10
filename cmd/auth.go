@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/AIEngineering26/promptvm-go-sdk/option"
 	"github.com/AIEngineering26/promptvm-cli/internal/config"
 	"github.com/AIEngineering26/promptvm-cli/internal/oauth"
+	"github.com/AIEngineering26/promptvm-cli/internal/prompt"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
@@ -32,7 +34,10 @@ stores a scoped CLI token in the OS keychain (OAuth/SSO flow).
 Use --device on headless machines: a user code is printed and you
 complete authorization in a browser on another device (RFC 8628).
 
-Use --api-key for the legacy long-lived API key flow.`,
+For non-interactive script use, pass --public-key and --secret-key
+(or the deprecated combined --api-key pk_…:sk_… form). When only
+--public-key is supplied, the CLI prompts for the matching secret
+with masked input so the value never leaks into shell history.`,
 	RunE: runAuthLogin,
 }
 
@@ -43,8 +48,15 @@ func init() {
 	authCmd.AddCommand(authStatusCmd)
 	authCmd.AddCommand(authSessionsCmd)
 
-	// Login flags.
-	authLoginCmd.Flags().String("api-key", "", "Use the legacy long-lived API key flow (non-interactive)")
+	// Login flags. The dual public-key/secret-key inputs are local to
+	// this subcommand so `promptvm auth login --help` lists them
+	// directly under "Flags:" rather than at the bottom under
+	// "Global Flags:". They mirror the root persistent flags and are
+	// resolved via the same credential precedence table in
+	// internal/client.ResolveCredentials.
+	authLoginCmd.Flags().String("public-key", "", "API public key (pk_…); paired with --secret-key")
+	authLoginCmd.Flags().String("secret-key", "", "API secret key (sk_…); prompts interactively if --public-key is given without it")
+	authLoginCmd.Flags().String("api-key", "", "Combined API key in pk_xxx:sk_xxx form (DEPRECATED: prefer --public-key/--secret-key)")
 	authLoginCmd.Flags().String("profile", "", `Profile name (default: "default")`)
 	authLoginCmd.Flags().String("base-url", "", "Custom API base URL")
 	authLoginCmd.Flags().String("app-url", "", "Web app base URL (overrides autodetection)")
@@ -60,12 +72,40 @@ func init() {
 // runAuthLogin dispatches to one of three backend flows depending on
 // the user's flags and environment:
 //
-//	--api-key pk_...       → legacy API-key flow (unchanged behavior)
+//	--public-key/--secret-key  → dual-key API-key flow (preferred)
+//	--api-key pk_…:sk_…        → legacy combined API-key flow (deprecated)
 //	--device | --no-browser | PROMPTVM_HEADLESS=1 → device code flow
-//	(default)              → browser-based PKCE flow
+//	(default)                  → browser-based PKCE flow
+//
+// When only --public-key is provided (no matching --secret-key), the
+// CLI prompts interactively for the secret with masked input, so the
+// secret value never has to land in shell history.
 func runAuthLogin(cmd *cobra.Command, _ []string) error {
-	apiKey, _ := cmd.Flags().GetString("api-key")
 	profileName, _ := cmd.Flags().GetString("profile")
+	publicKey, _ := cmd.Flags().GetString("public-key")
+	secretKey, _ := cmd.Flags().GetString("secret-key")
+	apiKey, _ := cmd.Flags().GetString("api-key")
+
+	// Dual-key flow: --public-key / --secret-key.
+	// If only --public-key is provided, prompt for the secret with
+	// hidden input via the `huh` TUI. This avoids putting the secret
+	// in shell history and keeps the dual-flag form ergonomic.
+	if publicKey != "" || secretKey != "" {
+		if publicKey == "" {
+			return fmt.Errorf("--public-key is required when --secret-key is set")
+		}
+		if secretKey == "" {
+			val, err := prompt.MaskedInput("Enter your secret key (sk_…)")
+			if err != nil {
+				return err
+			}
+			secretKey = strings.TrimSpace(val)
+			if secretKey == "" {
+				return fmt.Errorf("--secret-key is required")
+			}
+		}
+		return runDualKeyLogin(cmd, publicKey, secretKey, profileName)
+	}
 
 	if apiKey != "" {
 		return runAPIKeyLogin(cmd, apiKey, profileName)
@@ -90,6 +130,84 @@ func runAuthLogin(cmd *cobra.Command, _ []string) error {
 		return runDeviceLogin(cmd, profileName)
 	}
 	return runBrowserLogin(cmd, profileName)
+}
+
+// runDualKeyLogin validates a (publicKey, secretKey) pair against the
+// API and persists it to the named profile in dual-key form. Unlike
+// runAPIKeyLogin, this path never stores the legacy `api_key: pk:sk`
+// combined string — new profiles are written with `public_key` and
+// `secret_key` directly.
+func runDualKeyLogin(cmd *cobra.Command, publicKey, secretKey, profileName string) error {
+	if !strings.HasPrefix(publicKey, "pk_") {
+		return fmt.Errorf("--public-key must start with 'pk_'")
+	}
+	if !strings.HasPrefix(secretKey, "sk_") {
+		return fmt.Errorf("--secret-key must start with 'sk_'")
+	}
+
+	baseURL, _ := cmd.Flags().GetString("base-url")
+	if baseURL == "" {
+		baseURL = resolveLoginBaseURL(cmd)
+	}
+
+	if profileName == "" {
+		profileName = "default"
+	}
+	if err := config.ValidateProfileName(profileName); err != nil {
+		return err
+	}
+
+	fmt.Fprint(cmd.OutOrStdout(), "Validating key... ")
+
+	opts := []option.RequestOption{
+		option.WithCredentials(publicKey, secretKey),
+		option.WithBaseURL(baseURL),
+	}
+	client := sdkclient.NewClient(opts...)
+
+	info, err := validateAPIKey(client)
+	if err != nil {
+		fmt.Fprintln(cmd.OutOrStdout(), "✗")
+		return fmt.Errorf("API key validation failed: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "✓")
+
+	env := "live"
+	if len(publicKey) >= 8 && publicKey[3:7] == "test" {
+		env = "test"
+	}
+	if info.environment != "" {
+		env = info.environment
+	}
+
+	profile := &config.Profile{
+		Name:         profileName,
+		AuthType:     config.AuthTypeAPIKey,
+		PublicKey:    publicKey,
+		SecretKey:    secretKey,
+		BaseURL:      baseURL,
+		Environment:  env,
+		Organization: info.orgID,
+	}
+
+	if err := config.SaveProfile(profile); err != nil {
+		return fmt.Errorf("saving profile: %w", err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	cfg.ActiveProfile = profileName
+	if err := cfg.Save(); err != nil {
+		return fmt.Errorf("saving config: %w", err)
+	}
+
+	dir, _ := config.Dir()
+	fmt.Fprintf(cmd.OutOrStdout(), "\nProfile %q saved to %s/profiles/%s.yaml\n",
+		profileName, dir, profileName)
+	fmt.Fprintf(cmd.OutOrStdout(), "Active profile set to %q.\n", profileName)
+	return nil
 }
 
 // runAPIKeyLogin keeps the old behavior: prompt for key (if missing),
@@ -137,8 +255,19 @@ func runAPIKeyLogin(cmd *cobra.Command, apiKey, profileName string) error {
 	fmt.Print("Validating key... ")
 
 	opts := []option.RequestOption{
-		option.WithAPIKey(apiKey),
 		option.WithBaseURL(baseURL),
+	}
+	// If the user passed a pk:sk pair, use the dual-header SDK option
+	// so the validation call exercises the same wire format as ordinary
+	// CLI traffic. Fall back to a bearer-style header for legacy
+	// `pvk_…` long-lived tokens — option.WithAPIKey was removed in
+	// go-sdk v1 (it now panics with a migration message).
+	if pk, sk, err := splitPKSK(apiKey); err == nil {
+		opts = append(opts, option.WithCredentials(pk, sk))
+	} else {
+		h := make(http.Header)
+		h.Set("Authorization", "Bearer "+apiKey)
+		opts = append(opts, option.WithHTTPHeader(h))
 	}
 	client := sdkclient.NewClient(opts...)
 
@@ -175,10 +304,19 @@ func runAPIKeyLogin(cmd *cobra.Command, apiKey, profileName string) error {
 	profile := &config.Profile{
 		Name:         profileName,
 		AuthType:     config.AuthTypeAPIKey,
-		APIKey:       apiKey,
 		BaseURL:      baseURL,
 		Environment:  env,
 		Organization: info.orgID,
+	}
+	// Store credentials in dual-key form when the input is a properly
+	// formatted pk_…:sk_… pair. Otherwise, fall back to the legacy
+	// single-string field for backward compatibility with profiles
+	// that pre-date the dual-key migration (e.g. older `pvk_…` tokens).
+	if pk, sk, perr := splitPKSK(apiKey); perr == nil {
+		profile.PublicKey = pk
+		profile.SecretKey = sk
+	} else {
+		profile.APIKey = apiKey
 	}
 
 	if err := config.SaveProfile(profile); err != nil {
@@ -206,6 +344,22 @@ type validationInfo struct {
 	orgID       string
 	environment string
 	scopes      string
+}
+
+// splitPKSK parses a "pk_xxx:sk_xxx" combined credential into its two
+// halves. Used by the legacy --api-key login path to migrate inputs to
+// the dual-key profile shape on save. Returns an error if the input is
+// not exactly a pk:sk pair with the documented prefixes.
+func splitPKSK(combined string) (string, string, error) {
+	parts := strings.Split(combined, ":")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("not a pk:sk pair")
+	}
+	pk, sk := parts[0], parts[1]
+	if !strings.HasPrefix(pk, "pk_") || !strings.HasPrefix(sk, "sk_") {
+		return "", "", fmt.Errorf("missing pk_/sk_ prefixes")
+	}
+	return pk, sk, nil
 }
 
 // validateAPIKey calls a lightweight authenticated endpoint to verify the key.
