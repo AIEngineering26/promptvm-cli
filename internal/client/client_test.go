@@ -367,3 +367,27 @@ func TestRedact(t *testing.T) {
 		t.Errorf("public half lost: %q", got)
 	}
 }
+
+// TestRedactNoColon pins the no-colon path so error messages keep at
+// least a 4-char prefix when the input is long enough — otherwise the
+// user has no idea which malformed string the error refers to.
+func TestRedactNoColon(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", "***"},
+		{"a", "***"},
+		{"abcd", "***"},
+		{"abcde", "abcd***"},
+		{"pk_abcde_long_token", "pk_a***"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got := redact(c.in)
+			if got != c.want {
+				t.Errorf("redact(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}

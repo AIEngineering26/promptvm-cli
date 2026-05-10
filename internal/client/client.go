@@ -204,15 +204,20 @@ func parseCombinedAPIKey(token string) (string, string, error) {
 
 // redact replaces the secret half of a combined token with stars so it
 // doesn't leak into terminals or log files when surfaced in error
-// messages.
+// messages. It keeps just enough prefix so the user can tell which key
+// was malformed, without leaking enough characters to be useful as
+// a credential on its own.
 func redact(token string) string {
 	idx := strings.Index(token, ":")
 	if idx < 0 {
-		// No colon — token is malformed; just keep the prefix.
-		if len(token) <= 8 {
+		// No colon — the whole token is presumed-secret junk. Show at
+		// most the first 4 characters as a hint so the error message
+		// isn't a content-free `"***"` for short inputs.
+		const hint = 4
+		if len(token) <= hint {
 			return "***"
 		}
-		return token[:8] + "***"
+		return token[:hint] + "***"
 	}
 	return token[:idx+1] + "***"
 }
