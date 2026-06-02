@@ -2,10 +2,8 @@ module github.com/AIEngineering26/promptvm-cli
 
 go 1.25.6
 
-replace github.com/AIEngineering26/promptvm-go-sdk => ../go-sdk
-
 require (
-	github.com/AIEngineering26/promptvm-go-sdk v0.0.0-20260411200827-374e94e49b18
+	github.com/AIEngineering26/promptvm-go-sdk v0.0.0-20260516102302-f21f7aa2bdc8
 	github.com/manifoldco/promptui v0.9.0
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
