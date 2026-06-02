@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://api.promptvm.com"
+	defaultBaseURL = "https://dev-api.promptvm.ai"
 
 	// envAPIKey is the legacy combined env var. Kept as a backward-compat
 	// shim — pre-existing scripts continue to work without churn.

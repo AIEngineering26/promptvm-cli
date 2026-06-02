@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://api.promptvm.com"
+	defaultBaseURL = "https://dev-api.promptvm.ai"
 	envBaseURL     = "PROMPTVM_BASE_URL"
 )
 

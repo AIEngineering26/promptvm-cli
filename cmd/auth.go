@@ -249,7 +249,7 @@ func runAPIKeyLogin(cmd *cobra.Command, apiKey, profileName string) error {
 	}
 
 	if baseURL == "" {
-		baseURL = "https://api.promptvm.com"
+		baseURL = "https://dev-api.promptvm.ai"
 	}
 
 	fmt.Print("Validating key... ")
@@ -458,7 +458,7 @@ func resolveLoginBaseURL(cmd *cobra.Command) string {
 	if v := os.Getenv("PROMPTVM_BASE_URL"); v != "" {
 		return v
 	}
-	return "https://api.promptvm.com"
+	return "https://dev-api.promptvm.ai"
 }
 
 // resolveAppURL returns the web app base URL by checking the --app-url
@@ -474,11 +474,12 @@ func resolveAppURL(cmd *cobra.Command, apiBaseURL string) string {
 	if derived := deriveAppURL(apiBaseURL); derived != "" {
 		return derived
 	}
-	return "https://app.promptvm.com"
+	return "https://dev-app.promptvm.ai"
 }
 
-// deriveAppURL swaps the leading "api" label for "app" in known
-// promptvm.com hostnames. Returns "" if the URL doesn't match.
+// deriveAppURL swaps "api" for "app" in the host label of known
+// promptvm hostnames (e.g. dev-api.promptvm.ai → dev-app.promptvm.ai,
+// api.promptvm.com → app.promptvm.com). Returns "" if no match.
 func deriveAppURL(apiBaseURL string) string {
 	if apiBaseURL == "" {
 		return ""
@@ -488,6 +489,14 @@ func deriveAppURL(apiBaseURL string) string {
 		return ""
 	}
 	host := u.Host
+	if strings.HasPrefix(host, "dev-api.") {
+		host = "dev-app." + strings.TrimPrefix(host, "dev-api.")
+		return u.Scheme + "://" + host
+	}
+	if strings.HasPrefix(host, "staging-api.") {
+		host = "staging-app." + strings.TrimPrefix(host, "staging-api.")
+		return u.Scheme + "://" + host
+	}
 	if strings.HasPrefix(host, "api.") {
 		host = "app." + strings.TrimPrefix(host, "api.")
 		return u.Scheme + "://" + host
