@@ -8,3 +8,12 @@ dist/
 *.test
 *.out
 .env
+go.work
+go.work.sum
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+coverage.out
+coverage.html
