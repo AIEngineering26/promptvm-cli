@@ -34,6 +34,8 @@ func TestDeriveAppURL(t *testing.T) {
 	cases := []struct {
 		in, out string
 	}{
+		{"https://dev-api.promptvm.ai", "https://dev-app.promptvm.ai"},
+		{"https://staging-api.promptvm.ai", "https://staging-app.promptvm.ai"},
 		{"https://api.promptvm.com", "https://app.promptvm.com"},
 		{"https://api.staging.promptvm.com", "https://app.staging.promptvm.com"},
 		{"https://api.promptvm.com/", "https://app.promptvm.com"},
