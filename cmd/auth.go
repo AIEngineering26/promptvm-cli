@@ -399,12 +399,12 @@ func saveOAuthProfile(profileName, baseURL string, tokens *oauth.TokenResponse) 
 	}
 
 	var (
-		orgSlug   string
+		orgID     string
 		userID    string
 		userEmail string
 	)
 	if tokens.Organization != nil {
-		orgSlug = tokens.Organization.Slug
+		orgID = tokens.Organization.ID
 	}
 	if tokens.User != nil {
 		userID = tokens.User.ID
@@ -416,7 +416,7 @@ func saveOAuthProfile(profileName, baseURL string, tokens *oauth.TokenResponse) 
 		AuthType:     config.AuthTypeOAuth,
 		BaseURL:      baseURL,
 		Environment:  env,
-		Organization: orgSlug,
+		Organization: orgID,
 		TokenRef:     "promptvm-cli:" + profileName,
 		ExpiresAt:    tokens.ExpiresAt,
 		UserID:       userID,
@@ -436,6 +436,10 @@ func saveOAuthProfile(profileName, baseURL string, tokens *oauth.TokenResponse) 
 	}
 
 	fmt.Println()
+	orgSlug := ""
+	if tokens.Organization != nil {
+		orgSlug = tokens.Organization.Slug
+	}
 	if userEmail != "" {
 		if orgSlug != "" {
 			fmt.Printf("✓ Authenticated as %s (%s)\n", userEmail, orgSlug)
