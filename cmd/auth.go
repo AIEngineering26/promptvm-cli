@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	promptvmgosdk "github.com/AIEngineering26/promptvm-go-sdk"
 	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
 	"github.com/AIEngineering26/promptvm-go-sdk/option"
 	"github.com/AIEngineering26/promptvm-cli/internal/config"
@@ -363,12 +364,16 @@ func splitPKSK(combined string) (string, string, error) {
 }
 
 // validateAPIKey calls a lightweight authenticated endpoint to verify the key.
-// It uses the marketplace categories list as a low-cost authenticated check.
+// Uses collections list (limit 1) — available to API-key auth, unlike
+// marketplace categories which is JWT-only.
 func validateAPIKey(client *sdkclient.Client) (*validationInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if _, err := client.MarketplaceBrowse.ListMarketplaceCategories(ctx); err != nil {
+	limit := "1"
+	req := &promptvmgosdk.ListCollectionsRequest{}
+	req.SetLimit(&limit)
+	if _, err := client.Collections.ListCollections(ctx, req); err != nil {
 		return nil, err
 	}
 	return &validationInfo{}, nil
