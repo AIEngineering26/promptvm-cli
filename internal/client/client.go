@@ -45,6 +45,13 @@ type Credentials struct {
 	PublicKey   string
 	SecretKey   string
 	BearerToken string
+
+	// Organization is the org UUID recorded on the profile the bearer
+	// token came from. Sent as X-Org-Id so org-scoped routes (api-keys,
+	// settings, billing) can resolve the active org for CLI sessions.
+	// Empty for api-key credentials — the backend derives the org from
+	// the key itself.
+	Organization string
 }
 
 // IsAPIKey reports whether the credential is a dual-header api-key pair.
@@ -78,8 +85,14 @@ func NewFromContext(cmd *cobra.Command) (*sdkclient.Client, error) {
 		opts = append(opts, option.WithCredentials(creds.PublicKey, creds.SecretKey))
 	} else {
 		// OAuth bearer path — rely on the SDK's standard
-		// Authorization: Bearer <token> header.
-		opts = append(opts, option.WithHTTPHeader(bearerHeader(creds.BearerToken)))
+		// Authorization: Bearer <token> header. X-Org-Id rides in the
+		// same header object because the SDK's WithHTTPHeader replaces
+		// (not merges) the header set.
+		h := bearerHeader(creds.BearerToken)
+		if creds.Organization != "" {
+			h.Set("X-Org-Id", creds.Organization)
+		}
+		opts = append(opts, option.WithHTTPHeader(h))
 	}
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
@@ -155,7 +168,7 @@ func ResolveCredentials(cmd *cobra.Command) (Credentials, error) {
 			if err != nil {
 				return Credentials{}, err
 			}
-			return Credentials{BearerToken: tok}, nil
+			return Credentials{BearerToken: tok, Organization: profile.Organization}, nil
 		}
 		if profile.PublicKey != "" && profile.SecretKey != "" {
 			return Credentials{PublicKey: profile.PublicKey, SecretKey: profile.SecretKey}, nil
@@ -167,7 +180,7 @@ func ResolveCredentials(cmd *cobra.Command) (Credentials, error) {
 			}
 			// Profile contained a non-pk:sk token — treat as bearer
 			// (e.g. legacy pvk_… or pvcli_… token shapes).
-			return Credentials{BearerToken: profile.APIKey}, nil
+			return Credentials{BearerToken: profile.APIKey, Organization: profile.Organization}, nil
 		}
 	}
 
