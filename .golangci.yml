@@ -1,3 +1,5 @@
+version: "2"
+
 run:
   timeout: 5m
 
@@ -7,13 +9,29 @@ linters:
     - govet
     - staticcheck
     - unused
-    - gosimple
     - ineffassign
-    - typecheck
     - misspell
+  exclusions:
+    presets:
+      - std-error-handling
+  settings:
+    errcheck:
+      check-type-assertions: true
+      # Best-effort calls whose errors are intentionally ignored in a CLI:
+      # terminal writes, deferred closes, temp-file cleanup, and cobra flag
+      # registration (panics only on programmer error).
+      exclude-functions:
+        - (*github.com/spf13/cobra.Command).MarkFlagRequired
+        - (*text/tabwriter.Writer).Flush
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - os.Remove
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Scanln
+
+formatters:
+  enable:
     - gofmt
     - goimports
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true

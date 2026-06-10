@@ -8,9 +8,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	sdk "github.com/AIEngineering26/promptvm-go-sdk"
 	"github.com/AIEngineering26/promptvm-cli/internal/client"
 	"github.com/AIEngineering26/promptvm-cli/internal/output"
+	sdk "github.com/AIEngineering26/promptvm-go-sdk"
 	"github.com/spf13/cobra"
 )
 
@@ -346,7 +346,7 @@ func newApikeysUsageCmd() *cobra.Command {
 			// Period stats table
 			if stats := resp.GetPeriodStats(); len(stats) > 0 {
 				w := cmd.OutOrStdout()
-				output.Table(w, []string{"PERIOD", "REQUESTS", "ERRORS", "BYTES", "AVG LATENCY"}, func(tw *tabwriter.Writer) {
+				_ = output.Table(w, []string{"PERIOD", "REQUESTS", "ERRORS", "BYTES", "AVG LATENCY"}, func(tw *tabwriter.Writer) {
 					for _, s := range stats {
 						fmt.Fprintf(tw, "%s\t%d\t%d\t%s\t%.0fms\n",
 							string(s.GetPeriod()), s.GetRequests(), s.GetErrors(),

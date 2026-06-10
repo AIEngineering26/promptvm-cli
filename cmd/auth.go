@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	promptvmgosdk "github.com/AIEngineering26/promptvm-go-sdk"
-	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
-	"github.com/AIEngineering26/promptvm-go-sdk/option"
 	"github.com/AIEngineering26/promptvm-cli/internal/config"
 	"github.com/AIEngineering26/promptvm-cli/internal/oauth"
 	"github.com/AIEngineering26/promptvm-cli/internal/prompt"
+	promptvmgosdk "github.com/AIEngineering26/promptvm-go-sdk"
+	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
+	"github.com/AIEngineering26/promptvm-go-sdk/option"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )

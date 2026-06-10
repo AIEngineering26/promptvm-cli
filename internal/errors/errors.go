@@ -20,7 +20,7 @@ func (e *CLIError) Error() string {
 	b.WriteString("Error: ")
 	b.WriteString(e.Message)
 	if e.StatusCode > 0 {
-		b.WriteString(fmt.Sprintf(" (%d)", e.StatusCode))
+		fmt.Fprintf(&b, " (%d)", e.StatusCode)
 	}
 	if e.Hint != "" {
 		b.WriteString("\nHint: ")

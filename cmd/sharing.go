@@ -5,9 +5,9 @@ import (
 	"io"
 	"text/tabwriter"
 
-	sdk "github.com/AIEngineering26/promptvm-go-sdk"
 	"github.com/AIEngineering26/promptvm-cli/internal/client"
 	"github.com/AIEngineering26/promptvm-cli/internal/output"
+	sdk "github.com/AIEngineering26/promptvm-go-sdk"
 	"github.com/spf13/cobra"
 )
 
@@ -237,9 +237,9 @@ func newCollabListCmd() *cobra.Command {
 
 func newCollabAddCmd() *cobra.Command {
 	var (
-		email      string
-		role       string
-		userID     string
+		email  string
+		role   string
+		userID string
 	)
 
 	cmd := &cobra.Command{
@@ -338,4 +338,3 @@ func newCollabRemoveCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")
 	return cmd
 }
-

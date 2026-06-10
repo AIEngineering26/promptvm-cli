@@ -6,11 +6,11 @@ import (
 	"text/tabwriter"
 	"time"
 
-	sdk "github.com/AIEngineering26/promptvm-go-sdk"
 	"github.com/AIEngineering26/promptvm-cli/internal/api"
 	"github.com/AIEngineering26/promptvm-cli/internal/client"
 	"github.com/AIEngineering26/promptvm-cli/internal/config"
 	"github.com/AIEngineering26/promptvm-cli/internal/output"
+	sdk "github.com/AIEngineering26/promptvm-go-sdk"
 	"github.com/spf13/cobra"
 )
 

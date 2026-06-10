@@ -11,10 +11,10 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	sdk "github.com/AIEngineering26/promptvm-go-sdk"
-	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
 	"github.com/AIEngineering26/promptvm-cli/internal/client"
 	"github.com/AIEngineering26/promptvm-cli/internal/output"
+	sdk "github.com/AIEngineering26/promptvm-go-sdk"
+	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
 	"github.com/spf13/cobra"
 )
 

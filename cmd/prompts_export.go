@@ -6,9 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	sdk "github.com/AIEngineering26/promptvm-go-sdk"
 	"github.com/AIEngineering26/promptvm-cli/internal/client"
 	"github.com/AIEngineering26/promptvm-cli/internal/output"
+	sdk "github.com/AIEngineering26/promptvm-go-sdk"
 	"github.com/spf13/cobra"
 )
 
