@@ -165,10 +165,20 @@ func TestMergeHook_ForceReplacesEntries(t *testing.T) {
 	// Verify the remaining my-hook has v2.
 	found := false
 	for _, m := range matchers {
-		mMap := m.(map[string]interface{})
+		mMap, ok := m.(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected matcher to be a map, got %T", m)
+		}
 		if mMap["_slug"] == "my-hook" {
-			hooksArr := mMap["hooks"].([]interface{})
-			cmd := hooksArr[0].(map[string]interface{})["command"]
+			hooksArr, ok := mMap["hooks"].([]interface{})
+			if !ok {
+				t.Fatalf("expected hooks to be a slice, got %T", mMap["hooks"])
+			}
+			entry, ok := hooksArr[0].(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected hook entry to be a map, got %T", hooksArr[0])
+			}
+			cmd := entry["command"]
 			if cmd != "echo v2" {
 				t.Fatalf("expected v2 command, got %v", cmd)
 			}

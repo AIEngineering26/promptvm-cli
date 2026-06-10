@@ -62,7 +62,12 @@ func StartLoopbackServer(ctx context.Context) (int, <-chan Callback, func(), err
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("binding loopback listener: %w", err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		ln.Close()
+		return 0, nil, nil, fmt.Errorf("unexpected listener address type %T", ln.Addr())
+	}
+	port := addr.Port
 
 	ch := make(chan Callback, 1)
 	var delivered bool

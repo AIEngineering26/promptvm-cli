@@ -217,9 +217,9 @@ func (c *Config) Set(key, value string) error {
 // AllSettings returns all config keys and their values.
 func (c *Config) AllSettings() map[string]string {
 	return map[string]string{
-		"active_profile":    c.ActiveProfile,
-		"defaults.output":   c.Defaults.Output,
-		"defaults.no_color": fmt.Sprintf("%t", c.Defaults.NoColor),
+		"active_profile":     c.ActiveProfile,
+		"defaults.output":    c.Defaults.Output,
+		"defaults.no_color":  fmt.Sprintf("%t", c.Defaults.NoColor),
 		"defaults.workspace": c.Defaults.Workspace,
 	}
 }

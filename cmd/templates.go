@@ -6,8 +6,8 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	promptvmgosdk "github.com/AIEngineering26/promptvm-go-sdk"
 	"github.com/AIEngineering26/promptvm-cli/internal/client"
+	promptvmgosdk "github.com/AIEngineering26/promptvm-go-sdk"
 	"github.com/spf13/cobra"
 )
 
