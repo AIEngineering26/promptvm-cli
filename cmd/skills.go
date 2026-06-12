@@ -41,11 +41,13 @@ type skillDetail struct {
 	RawSkillMD    string           `json:"raw_skill_md"`
 	Sha256SkillMD string           `json:"sha256_skill_md"`
 	Files         []skillFileEntry `json:"files"`
-	WorkspaceID   string           `json:"workspaceId"`
-	Status        string           `json:"status"`
-	IsPublic      bool             `json:"isPublic"`
-	CreatedAt     *time.Time       `json:"createdAt"`
-	UpdatedAt     *time.Time       `json:"updatedAt"`
+	// FileCount is set by the LIST endpoint (which omits the files manifest).
+	FileCount   int        `json:"fileCount"`
+	WorkspaceID string     `json:"workspaceId"`
+	Status      string     `json:"status"`
+	IsPublic    bool       `json:"isPublic"`
+	CreatedAt   *time.Time `json:"createdAt"`
+	UpdatedAt   *time.Time `json:"updatedAt"`
 }
 
 type skillResponse struct {

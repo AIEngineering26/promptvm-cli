@@ -77,7 +77,7 @@ func newSkillsListCmd() *cobra.Command {
 				return output.Table(w, []string{"NAME", "SLUG", "STATUS", "FILES", "UPDATED"}, func(tw *tabwriter.Writer) {
 					for _, s := range items {
 						fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n",
-							s.Name, s.Slug, s.Status, len(s.Files), humanTimePtr(s.UpdatedAt))
+							s.Name, s.Slug, s.Status, s.FileCount, humanTimePtr(s.UpdatedAt))
 					}
 				})
 			})
