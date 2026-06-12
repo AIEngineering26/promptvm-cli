@@ -28,6 +28,16 @@ func newPromptsCreateCmd() *cobra.Command {
 		Short: "Create a new prompt",
 		Long:  "Creates a new prompt with an initial version (v1).",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --kind here is the prompt kind (template|instance), not the
+			// content kind. Catch the common mix-ups before the SDK rejects
+			// them with an unhelpful enum error.
+			switch strings.ToLower(kind) {
+			case "skill":
+				return fmt.Errorf(`skills are folder-shaped contexts — use "promptvm skills upload <folder>"`)
+			case "hook":
+				return fmt.Errorf(`hooks are structured contexts — use the "promptvm hooks" commands`)
+			}
+
 			c, err := client.NewFromContext(cmd)
 			if err != nil {
 				return err

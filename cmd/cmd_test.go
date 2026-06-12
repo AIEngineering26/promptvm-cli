@@ -21,6 +21,7 @@ func TestRootCommandWired(t *testing.T) {
 		"templates",
 		"marketplace",
 		"resources",
+		"skills",
 		"share",
 		"apikeys",
 		"contexts",
@@ -71,6 +72,20 @@ func TestWorkspacesSubcommands(t *testing.T) {
 	for _, name := range want {
 		if !got[name] {
 			t.Errorf("workspaces subcommand %q missing", name)
+		}
+	}
+}
+
+// TestSkillsSubcommands verifies all skills subcommands exist.
+func TestSkillsSubcommands(t *testing.T) {
+	want := []string{"upload", "list", "get", "download", "delete"}
+	got := make(map[string]bool)
+	for _, c := range skillsCmd.Commands() {
+		got[c.Name()] = true
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("skills subcommand %q missing", name)
 		}
 	}
 }
