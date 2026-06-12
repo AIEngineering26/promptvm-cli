@@ -35,6 +35,12 @@ cli/
 │   ├── hooks_uninstall.go  ← hooks uninstall <slug>
 │   ├── prompts.go          ← prompts parent
 │   ├── prompts_*.go        ← prompts subcommands
+│   ├── skills.go           ← skills parent + shared API shapes
+│   ├── skills_upload.go    ← skills upload <folder> (alias: create)
+│   ├── skills_list.go      ← skills list
+│   ├── skills_get.go       ← skills get <id> [--raw]
+│   ├── skills_download.go  ← skills download <id> <dir>
+│   ├── skills_delete.go    ← skills delete <id>
 │   └── ...
 ├── internal/
 │   ├── api/                ← Raw HTTP caller (for endpoints not in SDK)
@@ -45,7 +51,8 @@ cli/
 │   ├── ioutil/             ← Content reading helpers
 │   ├── oauth/              ← PKCE, device-code grant, keychain
 │   ├── output/             ← Table/JSON/YAML formatters
-│   └── prompt/             ← Interactive input (huh TUI)
+│   ├── prompt/             ← Interactive input (huh TUI)
+│   └── skills/             ← Agent Skills folder walk, frontmatter, safe paths
 ├── main.go
 ├── go.mod / go.sum
 └── Makefile
@@ -89,3 +96,26 @@ promptvm hooks uninstall <slug>   # Remove managed hook from settings
 - `--force` — Overwrite existing (install only)
 
 Uses raw HTTP (`internal/api.Caller`) since the Go SDK doesn't have hooks endpoints yet.
+
+## Skills Commands
+
+Manage folder-shaped Agent Skills (SKILL.md + bundled files, agentskills.io format).
+
+```bash
+promptvm skills upload <folder>        # Upload SKILL.md verbatim + bundled files as resources
+promptvm skills list [--workspace id]  # NAME, SLUG, STATUS, FILES, UPDATED
+promptvm skills get <id> [--raw]       # Frontmatter summary + manifest; --raw prints SKILL.md
+promptvm skills download <id> <dir>    # Recreate the skill folder locally
+promptvm skills delete <id> [--yes]    # Delete (y/N confirm)
+```
+
+**Upload flow:**
+1. Reads `SKILL.md` literally (byte-preserving); validates frontmatter `name` (kebab rule `^[a-z0-9][a-z0-9-]{0,63}$`) client-side
+2. Walks the folder (skips root SKILL.md, dotfiles, dot-dirs); each file uploads via the resources presigned-URL flow (`uploadFileResource` in `cmd/resources.go`)
+3. `POST /api/v1/skills` with `skill_md` + files manifest (relative forward-slash paths)
+
+**Key files:**
+- `internal/skills/skills.go` — folder walk, frontmatter parse/validate, `SafeJoin` path-escape guard for downloads
+- `internal/skills/skills_test.go` — table-driven unit tests
+
+Uses raw HTTP (`internal/api.Caller`) since the Go SDK doesn't have skills endpoints yet. Note: `prompts create --kind` takes the *prompt* kind (template|instance); passing `skill`/`hook` errors with a pointer to the right command family.

@@ -197,6 +197,23 @@ promptvm contexts list
 promptvm contexts list -o json
 ```
 
+### Skills
+
+```bash
+# Skills are folder-shaped contexts (agentskills.io format): a SKILL.md with
+# YAML frontmatter plus optional bundled files (scripts, references, assets).
+# Upload a folder — SKILL.md is sent verbatim, every other file becomes a
+# bundled resource under its relative path.
+promptvm skills upload ./pdf-tools --workspace ws_123 --tags pdf,docs
+promptvm skills upload ./pdf-tools --status published --public
+
+promptvm skills list --workspace ws_123
+promptvm skills get skl_123                  # frontmatter summary + file manifest
+promptvm skills get skl_123 --raw            # literal SKILL.md to stdout
+promptvm skills download skl_123 ./pdf-tools # recreate the skill folder locally
+promptvm skills delete skl_123 --yes
+```
+
 ### Search
 
 ```bash

@@ -179,12 +179,28 @@ func newResUploadCmd() *cobra.Command {
 }
 
 func uploadSingleFile(cmd *cobra.Command, c *sdkclient.Client, wsID, filePath string) (string, int64, error) {
+	resID, size, err := uploadFileResource(cmd, c, wsID, filePath, filepath.Base(filePath))
+	if err != nil {
+		return "", 0, err
+	}
+	if output.Format(cmd) == "table" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Uploaded resource %s (%s)\n", resID, resHumanBytes(size))
+	}
+	return resID, size, nil
+}
+
+// uploadFileResource runs the three-step resource upload flow (initiate →
+// PUT to presigned URL → confirm) without printing a summary line, so it can
+// be reused by commands that render their own per-file output (e.g. skills
+// upload). displayName labels the progress bar and is used as the resource
+// name.
+func uploadFileResource(cmd *cobra.Command, c *sdkclient.Client, wsID, filePath, displayName string) (string, int64, error) {
 	info, err := os.Stat(filePath)
 	if err != nil {
 		return "", 0, err
 	}
 	size := info.Size()
-	name := filepath.Base(filePath)
+	name := displayName
 
 	contentType := mime.TypeByExtension(filepath.Ext(name))
 	if contentType == "" {
@@ -241,9 +257,6 @@ func uploadSingleFile(cmd *cobra.Command, c *sdkclient.Client, wsID, filePath st
 		return "", 0, fmt.Errorf("confirm upload: %w", err)
 	}
 
-	if output.Format(cmd) == "table" {
-		fmt.Fprintf(cmd.OutOrStdout(), "Uploaded resource %s (%s)\n", data.GetResourceID(), resHumanBytes(size))
-	}
 	return data.GetResourceID(), size, nil
 }
 
