@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/AIEngineering26/promptvm-cli/internal/api"
 	"github.com/AIEngineering26/promptvm-cli/internal/client"
 	"github.com/AIEngineering26/promptvm-cli/internal/output"
 	sdk "github.com/AIEngineering26/promptvm-go-sdk"
@@ -93,10 +94,72 @@ func newListingsGetCmd() *cobra.Command {
 	}
 }
 
+// createListingBody is the JSON body for POST /api/v1/marketplace/listings.
+//
+// Sent via the raw-HTTP Caller (not the generated SDK) so it can carry the
+// skillId/hookId/directoryId source aliases the backend accepts in addition
+// to promptId/collectionId. The backend maps skillId/hookId to the
+// underlying promptId server-side. Skill/hook/collection listings are
+// free-only (priceCents must be 0).
+type createListingBody struct {
+	PromptID     string   `json:"promptId,omitempty"`
+	CollectionID string   `json:"collectionId,omitempty"`
+	SkillID      string   `json:"skillId,omitempty"`
+	HookID       string   `json:"hookId,omitempty"`
+	DirectoryID  string   `json:"directoryId,omitempty"`
+	Title        string   `json:"title"`
+	Description  string   `json:"description"`
+	CategoryIDs  []string `json:"categoryIds,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	PriceCents   *int     `json:"priceCents,omitempty"`
+	AccessType   string   `json:"accessType,omitempty"`
+}
+
+// createListingResult decodes the create response envelope.
+type createListingResult struct {
+	Data struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	} `json:"data"`
+}
+
+// listingSource names a single exactly-one source flag on `listings create`.
+type listingSource struct {
+	flag string // CLI flag name, e.g. "skill"
+	val  string // current flag value
+}
+
+// validateSingleSource returns the one set source, or an error if zero or
+// more than one of --prompt/--collection/--skill/--hook/--directory was
+// provided. The sources are mutually exclusive.
+func validateSingleSource(sources []listingSource) (listingSource, error) {
+	var set []listingSource
+	for _, s := range sources {
+		if s.val != "" {
+			set = append(set, s)
+		}
+	}
+	switch len(set) {
+	case 1:
+		return set[0], nil
+	case 0:
+		return listingSource{}, fmt.Errorf("a source is required: provide exactly one of --prompt, --collection, --skill, --hook, or --directory")
+	default:
+		names := make([]string, len(set))
+		for i, s := range set {
+			names[i] = "--" + s.flag
+		}
+		return listingSource{}, fmt.Errorf("exactly one source allowed, but %s were provided (--prompt, --collection, --skill, --hook, and --directory are mutually exclusive)", strings.Join(names, ", "))
+	}
+}
+
 func newListingsCreateCmd() *cobra.Command {
 	var (
 		promptID    string
 		collID      string
+		skillID     string
+		hookID      string
+		directoryID string
 		name        string
 		description string
 		categoryIDs []string
@@ -107,47 +170,60 @@ func newListingsCreateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "create",
-		Short: "Create a listing from a prompt or collection",
+		Short: "Create a listing from a prompt, skill, hook, collection, or directory",
+		Long: "Create a marketplace listing from exactly one source. Skills and hooks\n" +
+			"are listed via --skill/--hook (mapped to the underlying prompt id\n" +
+			"server-side). Skill, hook, and collection listings are free-only.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" || description == "" {
 				return fmt.Errorf("--name and --description are required")
 			}
 
-			c, err := client.NewFromContext(cmd)
+			src, err := validateSingleSource([]listingSource{
+				{"prompt", promptID},
+				{"collection", collID},
+				{"skill", skillID},
+				{"hook", hookID},
+				{"directory", directoryID},
+			})
 			if err != nil {
 				return err
 			}
 
-			req := &sdk.CreateMarketplaceListingRequest{
+			body := createListingBody{
 				Title:       name,
 				Description: description,
+				CategoryIDs: categoryIDs,
+				Tags:        tags,
+				AccessType:  accessType,
 			}
-			if promptID != "" {
-				req.PromptID = &promptID
-			}
-			if collID != "" {
-				req.CollectionID = &collID
-			}
-			if len(categoryIDs) > 0 {
-				req.CategoryIDs = categoryIDs
-			}
-			if len(tags) > 0 {
-				req.Tags = tags
-			}
-			if accessType != "" {
-				at := sdk.CreateMarketplaceListingRequestAccessType(accessType)
-				req.AccessType = &at
+			switch src.flag {
+			case "prompt":
+				body.PromptID = src.val
+			case "collection":
+				body.CollectionID = src.val
+			case "skill":
+				body.SkillID = src.val
+			case "hook":
+				body.HookID = src.val
+			case "directory":
+				body.DirectoryID = src.val
 			}
 			if price != "free" && price != "" {
 				var cents int
 				if _, err := fmt.Sscanf(price, "%d", &cents); err != nil {
 					return fmt.Errorf("invalid --price %q: expected integer cents or \"free\"", price)
 				}
-				req.PriceCents = &cents
+				body.PriceCents = &cents
 			}
 
-			resp, err := c.MarketplaceListings.CreateMarketplaceListing(cmd.Context(), req)
+			caller, err := api.NewFromContext(cmd)
 			if err != nil {
+				return err
+			}
+
+			var resp createListingResult
+			if err := caller.Post("/api/v1/marketplace/listings", body, &resp); err != nil {
 				return err
 			}
 
@@ -161,6 +237,9 @@ func newListingsCreateCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&promptID, "prompt", "", "Source prompt ID")
 	cmd.Flags().StringVar(&collID, "collection", "", "Source collection ID")
+	cmd.Flags().StringVar(&skillID, "skill", "", "Source skill ID (free-only)")
+	cmd.Flags().StringVar(&hookID, "hook", "", "Source hook ID (free-only)")
+	cmd.Flags().StringVar(&directoryID, "directory", "", "Source directory ID")
 	cmd.Flags().StringVar(&name, "name", "", "Listing title (required)")
 	cmd.Flags().StringVar(&description, "description", "", "Listing description (required)")
 	cmd.Flags().StringSliceVar(&categoryIDs, "category-ids", nil, "Category IDs")
@@ -274,12 +353,99 @@ func newListingsDeleteCmd() *cobra.Command {
 	return cmd
 }
 
+// claimResult decodes the claim response envelope. Read via the raw-HTTP
+// Caller so it can surface the createdItems manifest the backend returns for
+// skill/hook/collection claims (the generated SDK only models the legacy
+// importedPromptId/importedCollectionId fields).
+type claimResult struct {
+	Data struct {
+		PurchaseID           string             `json:"purchaseId"`
+		ImportedPromptID     *string            `json:"importedPromptId"`
+		ImportedCollectionID *string            `json:"importedCollectionId"`
+		ClaimedVersionID     *string            `json:"claimedVersionId"`
+		CreatedItems         *claimCreatedItems `json:"createdItems"`
+	} `json:"data"`
+}
+
+// claimCreatedItems mirrors the backend createdItems manifest: per-kind
+// arrays of copied items plus the destination collection id (for bundles).
+type claimCreatedItems struct {
+	Prompts      []claimCreatedItem `json:"prompts"`
+	Skills       []claimCreatedItem `json:"skills"`
+	Hooks        []claimCreatedItem `json:"hooks"`
+	Resources    []claimCreatedItem `json:"resources"`
+	CollectionID *string            `json:"collectionId"`
+}
+
+// claimCreatedItem captures the id fields a created item may carry. The
+// backend uses newFileId for content kinds and newResourceId for files; we
+// keep both and resolve the populated one when reporting.
+type claimCreatedItem struct {
+	NewFileID       *string `json:"newFileId"`
+	NewResourceID   *string `json:"newResourceId"`
+	SourceVersionID *string `json:"sourceVersionId"`
+}
+
+// formatClaimManifest renders a human-readable summary of what a claim
+// imported, preferring the per-kind createdItems manifest and falling back
+// to the legacy importedPromptId/importedCollectionId fields. The returned
+// lines never include the leading "Claimed listing" line so it can be unit
+// tested independently of the listing id.
+func formatClaimManifest(r *claimResult) []string {
+	var lines []string
+	ci := r.Data.CreatedItems
+	if ci != nil {
+		var parts []string
+		if n := len(ci.Prompts); n > 0 {
+			parts = append(parts, pluralize(n, "prompt"))
+		}
+		if n := len(ci.Skills); n > 0 {
+			parts = append(parts, pluralize(n, "skill"))
+		}
+		if n := len(ci.Hooks); n > 0 {
+			parts = append(parts, pluralize(n, "hook"))
+		}
+		if n := len(ci.Resources); n > 0 {
+			parts = append(parts, pluralize(n, "file"))
+		}
+		if len(parts) > 0 {
+			line := "Imported: " + strings.Join(parts, ", ")
+			if ci.CollectionID != nil && *ci.CollectionID != "" {
+				line += fmt.Sprintf(" → collection %s", *ci.CollectionID)
+			}
+			lines = append(lines, line)
+		} else if ci.CollectionID != nil && *ci.CollectionID != "" {
+			lines = append(lines, fmt.Sprintf("Imported collection %s", *ci.CollectionID))
+		}
+	}
+
+	// Fall back to legacy fields when no manifest was returned (older
+	// prompt/collection listings).
+	if len(lines) == 0 {
+		if id := r.Data.ImportedPromptID; id != nil && *id != "" {
+			lines = append(lines, fmt.Sprintf("Imported prompt: %s", *id))
+		}
+		if id := r.Data.ImportedCollectionID; id != nil && *id != "" {
+			lines = append(lines, fmt.Sprintf("Imported collection: %s", *id))
+		}
+	}
+	return lines
+}
+
+// pluralize returns "<n> <noun>" with an "s" suffix when n != 1.
+func pluralize(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
 func newListingsClaimCmd() *cobra.Command {
 	var workspace string
 
 	cmd := &cobra.Command{
 		Use:   "claim <id>",
-		Short: "Claim a free listing and import to workspace",
+		Short: "Claim a free listing (prompt, skill, hook, or collection) into a workspace",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			wsID, err := resolveWorkspaceForClaim(cmd, workspace)
@@ -287,16 +453,14 @@ func newListingsClaimCmd() *cobra.Command {
 				return err
 			}
 
-			c, err := client.NewFromContext(cmd)
+			caller, err := api.NewFromContext(cmd)
 			if err != nil {
 				return err
 			}
 
-			resp, err := c.MarketplaceListings.ClaimMarketplaceListing(cmd.Context(), &sdk.ClaimMarketplaceListingRequest{
-				ListingID:   args[0],
-				WorkspaceID: wsID,
-			})
-			if err != nil {
+			body := map[string]string{"workspaceId": wsID}
+			var resp claimResult
+			if err := caller.Post(fmt.Sprintf("/api/v1/marketplace/listings/%s/claim", args[0]), body, &resp); err != nil {
 				return err
 			}
 
@@ -305,17 +469,14 @@ func newListingsClaimCmd() *cobra.Command {
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Claimed listing %s\n", args[0])
-			if resp.Data.ImportedPromptID != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "Imported prompt: %s\n", *resp.Data.ImportedPromptID)
-			}
-			if resp.Data.ImportedCollectionID != nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "Imported collection: %s\n", *resp.Data.ImportedCollectionID)
+			for _, line := range formatClaimManifest(&resp) {
+				fmt.Fprintln(cmd.OutOrStdout(), line)
 			}
 			return nil
 		},
 	}
 
-	cmd.Flags().StringVar(&workspace, "workspace", "", "Target workspace ID (required)")
+	cmd.Flags().StringVar(&workspace, "workspace", "", "Target workspace ID (default: config defaults.workspace)")
 	return cmd
 }
 

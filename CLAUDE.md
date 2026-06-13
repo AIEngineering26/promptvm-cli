@@ -41,6 +41,8 @@ cli/
 │   ├── skills_get.go       ← skills get <id> [--raw]
 │   ├── skills_download.go  ← skills download <id> <dir>
 │   ├── skills_delete.go    ← skills delete <id>
+│   ├── marketplace.go      ← marketplace parent
+│   ├── marketplace_listings.go ← listings create/get/update/delete/claim (raw HTTP)
 │   └── ...
 ├── internal/
 │   ├── api/                ← Raw HTTP caller (for endpoints not in SDK)
@@ -119,3 +121,33 @@ promptvm skills delete <id> [--yes]    # Delete (y/N confirm)
 - `internal/skills/skills_test.go` — table-driven unit tests
 
 Uses raw HTTP (`internal/api.Caller`) since the Go SDK doesn't have skills endpoints yet. Note: `prompts create --kind` takes the *prompt* kind (template|instance); passing `skill`/`hook` errors with a pointer to the right command family.
+
+## Marketplace Listings Commands
+
+Publish and claim marketplace listings for any content kind.
+
+```bash
+# Create from exactly one source (mutually exclusive). Skill/hook/collection are free-only.
+promptvm marketplace listings create --prompt <id>     --name <t> --description <d>
+promptvm marketplace listings create --skill <id>      --name <t> --description <d>
+promptvm marketplace listings create --hook <id>       --name <t> --description <d>
+promptvm marketplace listings create --collection <id> --name <t> --description <d>
+promptvm marketplace listings create --directory <id>  --name <t> --description <d>
+
+# Claim a listing of any kind into a workspace; prints a per-kind imported manifest.
+promptvm marketplace listings claim <id> --workspace <id>
+```
+
+**Source flags** (`create`): `--prompt`, `--collection`, `--skill`, `--hook`, `--directory` — exactly one
+is required and they are mutually exclusive (`validateSingleSource`). `--skill`/`--hook` are sent as
+`skillId`/`hookId` in the request body; the backend maps them to the underlying `promptId`. Price stays
+free by default (`--price free`); skill/hook/collection listings reject a non-zero price server-side.
+
+**Claim manifest:** `claim` reads the backend `createdItems` response (`prompts`/`skills`/`hooks`/`resources`
+arrays + `collectionId`) and prints a summary like `Imported: 2 prompts, 1 skill, 1 hook, 1 file → collection <id>`
+(`formatClaimManifest`), falling back to the legacy `importedPromptId`/`importedCollectionId` fields for
+older prompt/collection listings.
+
+**Key files:**
+- `cmd/marketplace_listings.go` — create/get/update/delete/claim. `create` + `claim` use raw HTTP (`internal/api.Caller`) because the generated Go SDK doesn't yet model `skillId`/`hookId`/`directoryId` or the `createdItems` manifest (SDK regenerates via Fern after merge).
+- `cmd/marketplace_listings_test.go` — table-driven tests for source validation, request-body building, and manifest formatting.
