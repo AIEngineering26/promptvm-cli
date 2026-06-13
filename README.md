@@ -257,7 +257,17 @@ promptvm marketplace browse search --q "copywriting"
 promptvm marketplace browse featured
 promptvm marketplace browse categories
 
-promptvm marketplace listings create --title "Pro Copy Pack" --price 2999
+# Publish from exactly one source: a prompt, skill, hook, collection, or directory.
+# Skill, hook, and collection listings are free-only.
+promptvm marketplace listings create --prompt pmt_abc123 --name "Pro Copy Prompt" --description "..."
+promptvm marketplace listings create --skill skl_abc123 --name "Code Review Skill" --description "..."
+promptvm marketplace listings create --hook hk_abc123  --name "Pre-commit Hook"  --description "..."
+promptvm marketplace listings create --collection col_1 --name "Startup Kit"     --description "..."
+
+# Claim any kind into a workspace; prints a per-kind imported manifest, e.g.
+#   Imported: 2 prompts, 1 skill, 1 hook, 1 file → collection col_9
+promptvm marketplace listings claim lst_123 --workspace ws_123
+
 promptvm marketplace creator dashboard
 
 promptvm marketplace subscribe creator_abc
