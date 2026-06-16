@@ -49,6 +49,12 @@ brews:
     license: MIT
     install: |
       bin.install "promptvm"
+    caveats: |
+      On first run, promptvm installs a bundled "promptvm" agent skill into your
+      Claude Code (~/.claude/skills) and Codex (~/.agents/skills) directories so
+      agents already know how to use PromptVM. Manage it with `promptvm agent`
+      (install / status / uninstall); disable auto-install with
+      PROMPTVM_NO_AGENT_SKILL=1.
     test: |
       system "#{bin}/promptvm", "version"
 

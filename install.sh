@@ -47,3 +47,12 @@ else
 fi
 
 echo "promptvm $VERSION installed to $INSTALL_DIR/promptvm"
+
+# Best-effort: install the bundled "promptvm" agent skill for Claude Code / Codex
+# so any agent session already knows how to drive PromptVM. Non-fatal; it also
+# happens automatically on first run. Opt out with PROMPTVM_NO_AGENT_SKILL=1.
+if [ -z "${PROMPTVM_NO_AGENT_SKILL:-}" ]; then
+  "$INSTALL_DIR/promptvm" agent install >/dev/null 2>&1 \
+    && echo "Installed the promptvm agent skill (manage with 'promptvm agent'; disable with PROMPTVM_NO_AGENT_SKILL=1)." \
+    || true
+fi
