@@ -83,7 +83,10 @@ func (t Target) BaseDir(scope Scope) (string, error) {
 		return filepath.Join(root, ".claude", "skills"), nil
 	case "codex":
 		if scope == ScopeUser {
-			if ch := strings.TrimSpace(os.Getenv("CODEX_HOME")); ch != "" {
+			// Honor CODEX_HOME only when it is an absolute path; a relative
+			// value would resolve against the process cwd and silently scatter
+			// installs, so we fall back to ~/.agents in that case.
+			if ch := strings.TrimSpace(os.Getenv("CODEX_HOME")); ch != "" && filepath.IsAbs(ch) {
 				return filepath.Join(ch, "skills"), nil
 			}
 		}
@@ -158,8 +161,14 @@ type InstalledTarget struct {
 // given scope and returns the per-target install locations.
 //
 // When a target's promptvm folder already exists and force is false, Install
-// skips it with an error — unless the installed SKILL.md already matches the
-// bundled checksum, in which case it is treated as an idempotent no-op.
+// behaves as follows based on the installed SKILL.md:
+//   - checksum matches the bundle      → idempotent no-op
+//   - folder has no readable SKILL.md  → treated as not installed; repaired
+//   - checksum differs                 → error (use force to overwrite)
+//
+// On error the returned slice contains the targets installed before the
+// failure (Install processes targets sequentially and stops at the first one
+// that errors).
 func Install(scope Scope, targets []Target, force bool) ([]InstalledTarget, error) {
 	results := make([]InstalledTarget, 0, len(targets))
 	for _, t := range targets {
@@ -168,12 +177,18 @@ func Install(scope Scope, targets []Target, force bool) ([]InstalledTarget, erro
 			return results, err
 		}
 		if _, statErr := os.Stat(dest); statErr == nil && !force {
-			if installedChecksum(dest) == Checksum() {
+			switch installedChecksum(dest) {
+			case Checksum():
 				// Already up to date; nothing to do.
 				results = append(results, InstalledTarget{Key: t.Key, Path: dest})
 				continue
+			case "":
+				// Folder exists but has no readable SKILL.md (interrupted
+				// write, manual mkdir). Fall through and repair it — the
+				// per-file atomic writes below are themselves idempotent.
+			default:
+				return results, fmt.Errorf("skill already installed at %s; use --force to overwrite", dest)
 			}
-			return results, fmt.Errorf("skill already installed at %s; use --force to overwrite", dest)
 		}
 		if err := writeEmbedded(dest); err != nil {
 			return results, fmt.Errorf("installing %s skill: %w", t.Label, err)
@@ -183,16 +198,43 @@ func Install(scope Scope, targets []Target, force bool) ([]InstalledTarget, erro
 	return results, nil
 }
 
-// Uninstall removes the given promptvm skill folders. For safety it only
-// removes folders whose final path element is the skill name. A missing folder
-// is not an error.
-func Uninstall(paths []string) error {
-	for _, p := range paths {
-		if p == "" || filepath.Base(p) != Name {
+// InstallBestEffort installs each target independently, skipping (rather than
+// aborting on) any target that errors, and returns the targets that did
+// install. Used by first-run auto-install so a pre-existing/conflicting folder
+// for one agent never blocks installing the other — or permanently wedges the
+// first-run path before a marker can be written.
+func InstallBestEffort(scope Scope, targets []Target) []InstalledTarget {
+	installed := make([]InstalledTarget, 0, len(targets))
+	for _, t := range targets {
+		res, err := Install(scope, []Target{t}, false)
+		if err != nil {
 			continue
 		}
-		if err := os.RemoveAll(p); err != nil {
-			return fmt.Errorf("removing %s: %w", p, err)
+		installed = append(installed, res...)
+	}
+	return installed
+}
+
+// Uninstall removes the given promptvm skill folders. The paths come from the
+// tracker (an on-disk, user-editable file), so it defends against a corrupted
+// or hand-edited marker: it cleans each path, removes only folders whose final
+// element is the skill name, and refuses to follow a symlinked leaf. A missing
+// folder is not an error.
+func Uninstall(paths []string) error {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		clean := filepath.Clean(p)
+		if filepath.Base(clean) != Name {
+			continue
+		}
+		// Never traverse a symlinked leaf — remove the link itself at most.
+		if fi, err := os.Lstat(clean); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if err := os.RemoveAll(clean); err != nil {
+			return fmt.Errorf("removing %s: %w", clean, err)
 		}
 	}
 	return nil

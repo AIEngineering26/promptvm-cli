@@ -36,7 +36,7 @@ func newAgentStatusCmd() *cobra.Command {
 				Skill:           agentskill.Name,
 				BundledVersion:  agentskill.Version,
 				BundledChecksum: agentskill.Checksum(),
-				Status:          "not-installed",
+				Status:          agentskill.StatusNotInstalled,
 			}
 			if tracker != nil {
 				view.Status = tracker.Status

@@ -209,6 +209,113 @@ func TestFilesIncludesSkillMD(t *testing.T) {
 	}
 }
 
+func TestBaseDirProjectScope(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	wd, err := os.Getwd() // resolve symlinks (macOS /var → /private/var)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// CODEX_HOME must be ignored for project scope even when absolute.
+	t.Setenv("CODEX_HOME", filepath.Join(dir, "ignored"))
+
+	claude := mustTarget(t, "claude")
+	codex := mustTarget(t, "codex")
+	if got, _ := claude.BaseDir(ScopeProject); got != filepath.Join(wd, ".claude", "skills") {
+		t.Errorf("claude project BaseDir = %q", got)
+	}
+	if got, _ := codex.BaseDir(ScopeProject); got != filepath.Join(wd, ".agents", "skills") {
+		t.Errorf("codex project BaseDir = %q", got)
+	}
+}
+
+func TestCodexHomeMustBeAbsolute(t *testing.T) {
+	home := withTempHome(t)
+	codex := mustTarget(t, "codex")
+	// A relative CODEX_HOME is rejected; falls back to ~/.agents/skills.
+	t.Setenv("CODEX_HOME", "relative/path")
+	if got, _ := codex.BaseDir(ScopeUser); got != filepath.Join(home, ".agents", "skills") {
+		t.Errorf("relative CODEX_HOME should be ignored, got %q", got)
+	}
+}
+
+func TestInstallRepairsFolderWithoutSkillMD(t *testing.T) {
+	withTempHome(t)
+	tg := mustTarget(t, "claude")
+	dest, _ := tg.DestDir(ScopeUser)
+	if err := os.MkdirAll(dest, 0o755); err != nil { // empty folder, no SKILL.md
+		t.Fatal(err)
+	}
+	if _, err := Install(ScopeUser, []Target{tg}, false); err != nil {
+		t.Fatalf("expected repair of empty folder, got error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "SKILL.md")); err != nil {
+		t.Errorf("SKILL.md not written during repair: %v", err)
+	}
+}
+
+func TestInstallBestEffortSkipsConflict(t *testing.T) {
+	withTempHome(t)
+	// Pre-create a conflicting claude folder with different content.
+	claude := mustTarget(t, "claude")
+	cdest, _ := claude.DestDir(ScopeUser)
+	if err := os.MkdirAll(cdest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cdest, "SKILL.md"), []byte("different content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	installed := InstallBestEffort(ScopeUser, AllTargets())
+	if len(installed) != 1 || installed[0].Key != "codex" {
+		t.Fatalf("expected only codex installed (claude conflicts), got %+v", installed)
+	}
+	// The conflicting claude file must be left untouched.
+	got, _ := os.ReadFile(filepath.Join(cdest, "SKILL.md"))
+	if string(got) != "different content" {
+		t.Error("best-effort install clobbered a conflicting folder")
+	}
+}
+
+func TestUninstallSkipsSymlinkedLeaf(t *testing.T) {
+	withTempHome(t)
+	base := t.TempDir()
+	real := filepath.Join(base, "realdir")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, Name) // a symlink whose base == "promptvm"
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	if err := Uninstall([]string{link}); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Errorf("symlinked leaf should not have been removed: %v", err)
+	}
+	if _, err := os.Stat(real); err != nil {
+		t.Errorf("symlink target should be untouched: %v", err)
+	}
+}
+
+func TestLoadTrackerMalformed(t *testing.T) {
+	withTempHome(t)
+	p, err := TrackerPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{ not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadTracker(); err == nil {
+		t.Error("expected error loading malformed marker")
+	}
+}
+
 func mustTarget(t *testing.T, key string) Target {
 	t.Helper()
 	tg, ok := TargetByKey(key)

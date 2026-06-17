@@ -37,6 +37,9 @@ func TestResolveScope(t *testing.T) {
 }
 
 func TestResolveTargets(t *testing.T) {
+	if ts, err := resolveTargets(""); err != nil || len(ts) != 2 {
+		t.Errorf("resolveTargets(\"\") = %v, %v", ts, err)
+	}
 	if ts, err := resolveTargets("all"); err != nil || len(ts) != 2 {
 		t.Errorf("resolveTargets(all) = %v, %v", ts, err)
 	}

@@ -27,7 +27,12 @@ go vet ./...     # static analysis
 ```
 cli/
 ├── cmd/                     ← One file per command/subcommand
-│   ├── root.go             ← Root command + global flags
+│   ├── root.go             ← Root command + global flags (+ first-run skill auto-install)
+│   ├── agent.go            ← agent parent command (+ scope/target resolvers)
+│   ├── agent_install.go    ← agent install (--scope --target --force --dry-run)
+│   ├── agent_uninstall.go  ← agent uninstall
+│   ├── agent_status.go     ← agent status (bundled vs installed)
+│   ├── agent_autoinstall.go← first-run opt-out auto-install (PersistentPreRun)
 │   ├── hooks.go            ← hooks parent command
 │   ├── hooks_install.go    ← hooks install <slug>
 │   ├── hooks_browse.go     ← hooks browse (list from API)
@@ -45,6 +50,7 @@ cli/
 │   ├── marketplace_listings.go ← listings create/get/update/delete/claim (raw HTTP)
 │   └── ...
 ├── internal/
+│   ├── agentskill/        ← Bundled "promptvm" Agent Skill (//go:embed) + install/tracker
 │   ├── api/                ← Raw HTTP caller (for endpoints not in SDK)
 │   ├── client/             ← SDK client factory (credential resolution)
 │   ├── config/             ← Profile & config storage (~/.config/promptvm/)
@@ -69,6 +75,37 @@ Credential resolution precedence (in `internal/client/client.go`):
 4. `PROMPTVM_API_KEY` env var (backward-compat)
 5. Active profile (api-key)
 6. Active profile (OAuth with auto-refresh from keychain)
+
+## Agent Skill Commands
+
+Bundles a canonical `promptvm` Agent Skill (via `//go:embed`) and installs it
+into the Claude Code / Codex skills directories so any agent session already
+knows how to drive PromptVM.
+
+```bash
+promptvm agent install            # all targets, --scope user (default), --target all
+promptvm agent install --dry-run  # list paths without writing
+promptvm agent install --force    # overwrite an existing/older skill
+promptvm agent status             # bundled vs installed version + paths
+promptvm agent uninstall          # remove installed skill folders + clear marker
+```
+
+**Targets / scope** (`internal/agentskill.BaseDir`):
+- claude → `~/.claude/skills` (user) / `./.claude/skills` (project)
+- codex → `$CODEX_HOME/skills` (absolute only) else `~/.agents/skills` (user) / `./.agents/skills` (project)
+
+`--scope` defaults to **user** here (a skill teaches an agent globally),
+unlike `hooks` which defaults to **project** (hooks are project config).
+
+**First-run auto-install:** `root.go` `PersistentPreRun` calls
+`maybeAutoInstallAgentSkill` — best-effort, non-fatal, idempotent via the
+marker. Opt out with `PROMPTVM_NO_AGENT_SKILL=1` (checked before any FS
+access). Skips the `agent`/`version`/`completion`/`help` commands.
+
+**Key files:**
+- `internal/agentskill/agentskill.go` — embed + `Install`/`InstallBestEffort`/`Uninstall`/`Checksum`/`Target`
+- `internal/agentskill/tracker.go` — marker at `config.Dir()/agent-skill.json`
+- `internal/agentskill/data/promptvm/SKILL.md` — the bundled skill (bump `Version` to ship updates)
 
 ## Hooks Commands
 

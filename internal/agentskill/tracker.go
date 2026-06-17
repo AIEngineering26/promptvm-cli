@@ -21,6 +21,9 @@ const (
 	// StatusSkipped means the user opted out (reserved; the env opt-out
 	// currently short-circuits before writing a marker).
 	StatusSkipped = "skipped"
+	// StatusNotInstalled is reported by `agent status` when no marker exists.
+	// It is never persisted.
+	StatusNotInstalled = "not-installed"
 )
 
 // TrackedTarget records one installed target location.

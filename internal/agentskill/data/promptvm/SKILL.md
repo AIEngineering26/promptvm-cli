@@ -56,12 +56,12 @@ promptvm orgs list
 
 ### Prompts
 ```bash
-promptvm prompts list [--workspace <id>]
-promptvm prompts create --name <n> --kind template|instance
+promptvm prompts list --workspace <id>            # --workspace is required
+promptvm prompts create --name <n> --workspace <id> --kind template|instance
 promptvm prompts get <id>
 promptvm prompts update <id>
-promptvm prompts versions <id>           # version history
-promptvm prompts resolve <id> --var key=value   # {{var}} substitution
+promptvm prompts versions list <id>      # version history (versions is a parent: list|get|create)
+promptvm prompts resolve <id> --var key=value   # {{var}} substitution (repeatable; also --vars-file)
 promptvm prompts rollback <id> --to <version> [--yes]
 promptvm prompts fork <id>
 promptvm prompts export <id>
@@ -100,11 +100,11 @@ promptvm resources ...                    # alias: res — bundled files
 
 ### Marketplace
 ```bash
-promptvm marketplace browse
+promptvm marketplace browse search [query]   # browse is a parent: search|featured|categories
 promptvm marketplace listings create --prompt|--skill|--hook|--collection|--directory <id> \
     --name <title> --description <desc>
 promptvm marketplace listings get|update|delete <id>
-promptvm marketplace listings claim <id> --workspace <id>   # import into a workspace
+promptvm marketplace listings claim <id> [--workspace <id>]   # defaults to configured workspace
 ```
 
 ### Search / contexts / share
@@ -129,4 +129,5 @@ CLI is not installed locally.
 - Add `-o json` (or `-o yaml`) for structured output you can parse.
 - `--dry-run` previews `hooks install` without writing.
 - Most write commands accept `--yes` to skip interactive confirmation in CI.
-- Scope hook/skill installs with `--scope project` (cwd) or `--scope user` (home).
+- Scope `hooks install`/`hooks list`/`hooks uninstall` with `--scope project` (cwd) or
+  `--scope user` (home). (Skills are placed via `skills download <id> <dir>`, not `--scope`.)

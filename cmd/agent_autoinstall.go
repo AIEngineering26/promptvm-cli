@@ -27,11 +27,19 @@ var skipAutoInstallCommands = map[string]bool{
 // env opt-out short-circuits before any filesystem access, which also keeps the
 // test suite hermetic.
 func maybeAutoInstallAgentSkill(cmd *cobra.Command) {
+	// Opt-out is checked before any filesystem access (and before the recover
+	// guard, which env lookup cannot trip), so it is a pure no-op switch.
 	if os.Getenv("PROMPTVM_NO_AGENT_SKILL") != "" {
 		return
 	}
-	// Never let auto-install panic the CLI.
-	defer func() { _ = recover() }()
+	// Never let auto-install panic the CLI; surface the cause under --verbose.
+	defer func() {
+		if r := recover(); r != nil {
+			if v, _ := cmd.Flags().GetBool("verbose"); v {
+				fmt.Fprintf(os.Stderr, "agent skill auto-install skipped (internal error: %v)\n", r)
+			}
+		}
+	}()
 
 	if skipAutoInstallCommands[topLevelName(cmd)] {
 		return
@@ -43,9 +51,12 @@ func maybeAutoInstallAgentSkill(cmd *cobra.Command) {
 		return
 	}
 
-	installed, err := agentskill.Install(agentskill.ScopeUser, agentskill.AllTargets(), false)
-	if err != nil {
-		return // non-fatal
+	// Best-effort: install each target independently so a pre-existing or
+	// conflicting folder for one agent never blocks the other — and never
+	// wedges the first-run path before a marker is written.
+	installed := agentskill.InstallBestEffort(agentskill.ScopeUser, agentskill.AllTargets())
+	if len(installed) == 0 {
+		return // nothing installed; leave first-run state untouched to retry next time
 	}
 
 	tracker := &agentskill.Tracker{
