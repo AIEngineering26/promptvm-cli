@@ -17,6 +17,7 @@ var rootCmd = &cobra.Command{
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		noColor, _ := cmd.Flags().GetBool("no-color")
 		output.InitColor(noColor)
+		maybeAutoInstallAgentSkill(cmd)
 	},
 	// Cobra already prints its own error to stderr before Execute returns,
 	// so silence its default error handling and let Execute print a

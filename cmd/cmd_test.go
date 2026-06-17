@@ -1,9 +1,19 @@
 package cmd
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
+
+// TestMain disables first-run agent-skill auto-install for the whole cmd test
+// suite. PersistentPreRun fires on every Execute(), and the opt-out env var
+// short-circuits before any filesystem access, keeping tests hermetic — they
+// never write to the real ~/.claude, ~/.agents, or ~/.config.
+func TestMain(m *testing.M) {
+	os.Setenv("PROMPTVM_NO_AGENT_SKILL", "1")
+	os.Exit(m.Run())
+}
 
 // TestRootCommandWired ensures every top-level command we advertise has been
 // registered on the root command. This catches accidental removal of `init()`

@@ -320,6 +320,34 @@ promptvm completion powershell | Out-String | Invoke-Expression
 
 ---
 
+## Agent skill
+
+The CLI bundles a canonical **`promptvm` Agent Skill** that teaches coding
+agents how to drive PromptVM. It is installed automatically the first time you
+run any `promptvm` command (opt-out), writing the same folder-shaped skill into
+both agents' skill directories:
+
+| Agent       | User scope (default)                       | Project scope (`--scope project`) |
+|-------------|--------------------------------------------|-----------------------------------|
+| Claude Code | `~/.claude/skills/promptvm/`               | `./.claude/skills/promptvm/`      |
+| Codex       | `$CODEX_HOME/skills/promptvm/` or `~/.agents/skills/promptvm/` | `./.agents/skills/promptvm/` |
+
+Manage it explicitly with the `agent` command family:
+
+```bash
+promptvm agent install                 # all targets, user scope (default)
+promptvm agent install --target claude --scope project
+promptvm agent install --dry-run       # list paths it would write
+promptvm agent install --force         # overwrite an existing/older skill
+promptvm agent status                  # bundled vs installed version + paths
+promptvm agent uninstall               # remove the skill folders it installed
+```
+
+Disable the first-run auto-install (and the `install.sh` step) by setting
+`PROMPTVM_NO_AGENT_SKILL=1`.
+
+---
+
 ## Output formats
 
 Every read command supports JSON and YAML for scripting:
@@ -357,6 +385,8 @@ promptvm prompts list --no-color
 | `PROMPTVM_HEADLESS`    | Set to `1` to force `auth login` into the device-code flow       |
 | `PROMPTVM_DEVICE_NAME` | Label sent to the server when authorizing a CLI session          |
 | `XDG_CONFIG_HOME`      | Root for `promptvm/` config directory                            |
+| `CODEX_HOME`           | Codex home; its `skills/` dir is the user-scope Codex skill target|
+| `PROMPTVM_NO_AGENT_SKILL` | Set to `1` to disable first-run agent-skill auto-install      |
 
 ---
 
