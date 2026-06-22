@@ -1,5 +1,13 @@
 version: 2
 
+# NOTE: goreleaser has no native npm publisher. The npm distribution
+# (root `promptvm` package + per-platform `@promptvm/cli-*` sub-packages,
+# Option B / optionalDependencies) is produced by the custom release step
+# scripts/build-npm-packages.mjs, run from the `npm-publish` job in
+# .github/workflows/release.yml after these binaries are built. npm publish is
+# gated on confirming the `promptvm` name + `@promptvm` org ownership and the
+# NPM_TOKEN secret. See npm/README.md and docs/runbooks/npm-release.md.
+
 builds:
   - id: promptvm
     main: .

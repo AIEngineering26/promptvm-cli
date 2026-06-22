@@ -82,6 +82,45 @@ func NewFromContext(cmd *cobra.Command) (*Caller, error) {
 	return c, nil
 }
 
+// AnonymousFromContext creates a Caller for public, unauthenticated endpoints
+// (e.g. GET /api/v1/skills/s/:slug). Unlike NewFromContext it never errors when
+// no credentials are present — the public routes accept anonymous requests.
+//
+// Base-URL resolution still honors --base-url, then PROMPTVM_BASE_URL, then the
+// active profile's baseUrl, then the default. If credentials happen to be
+// available (flags, env, or an active profile) they are attached best-effort so
+// authenticated callers keep working; a credential-resolution failure is
+// ignored and the request proceeds anonymously.
+func AnonymousFromContext(cmd *cobra.Command) *Caller {
+	profile := activeProfile()
+
+	baseURL := resolveFlag(cmd, "base-url")
+	if baseURL == "" {
+		baseURL = os.Getenv(envBaseURL)
+	}
+	if baseURL == "" && profile != nil {
+		baseURL = profile.BaseURL
+	}
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
+
+	c := &Caller{BaseURL: baseURL, profile: profile}
+
+	// Best-effort: attach credentials if they resolve cleanly, but never fail.
+	if creds, err := client.ResolveCredentials(cmd); err == nil {
+		if creds.IsAPIKey() {
+			c.PublicKey = creds.PublicKey
+			c.SecretKey = creds.SecretKey
+			c.APIKey = creds.PublicKey + ":" + creds.SecretKey
+		} else if creds.BearerToken != "" {
+			c.BearerToken = creds.BearerToken
+			c.APIKey = creds.BearerToken
+		}
+	}
+	return c
+}
+
 // activeProfile loads the active profile, returning nil on any error.
 func activeProfile() *config.Profile {
 	cfg, err := config.Load()
@@ -104,6 +143,91 @@ func (c *Caller) Get(path string, result interface{}) error {
 		}
 		return c.do(req, result)
 	})
+}
+
+// StatusError is returned by GetWithContext when the server responds with a
+// status >= 400. It carries the HTTP status code so callers can map specific
+// statuses (e.g. 404) to tailored, user-facing messages.
+type StatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("API error %d: %s", e.StatusCode, e.Body)
+}
+
+// GetWithContext performs a GET using the supplied context (so callers control
+// the request timeout) and decodes JSON into result. On a >= 400 response it
+// returns a *StatusError; on a transport failure it returns the underlying
+// error so callers can distinguish "not found" from "could not connect".
+//
+// It does not auto-refresh OAuth tokens — it is intended for public endpoints
+// reachable anonymously; if credentials are attached they ride along but a 401
+// is surfaced as a StatusError rather than triggering a refresh.
+func (c *Caller) GetWithContext(ctx context.Context, path string, result interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	return c.doStatus(req, result)
+}
+
+// PostBestEffort performs a fire-and-forget POST with the supplied context. It
+// is used for non-critical side effects (e.g. the install counter): any
+// transport error or >= 400 response is returned for optional logging, never to
+// fail the caller's primary operation.
+func (c *Caller) PostBestEffort(ctx context.Context, path string, body interface{}) error {
+	var bodyReader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bodyReader)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return c.doStatus(req, nil)
+}
+
+// doStatus is like do but returns a *StatusError (with the status code) on a
+// >= 400 response instead of a flattened error string.
+func (c *Caller) doStatus(req *http.Request, result interface{}) error {
+	if c.PublicKey != "" && c.SecretKey != "" {
+		req.Header.Set("X-PromptVM-Public-Key", c.PublicKey)
+		req.Header.Set("X-PromptVM-Secret-Key", c.SecretKey)
+	} else if c.BearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return &StatusError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+
+	if result != nil && len(body) > 0 {
+		if err := json.Unmarshal(body, result); err != nil {
+			return fmt.Errorf("parsing response: %w", err)
+		}
+	}
+	return nil
 }
 
 // Post performs a POST request with a JSON body.

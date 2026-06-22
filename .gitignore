@@ -1,5 +1,7 @@
 bin/
 dist/
+dist-npm/
+node_modules/
 *.exe
 *.exe~
 *.dll

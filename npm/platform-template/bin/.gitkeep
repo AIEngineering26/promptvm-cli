@@ -1,0 +1,2 @@
+# The prebuilt Go binary (`promptvm` / `promptvm.exe`) is placed here at
+# release time by scripts/build-npm-packages.mjs. It is NOT checked into git.

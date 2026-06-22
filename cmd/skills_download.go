@@ -32,37 +32,12 @@ func newSkillsDownloadCmd() *cobra.Command {
 			}
 			d := resp.Data
 
-			// Validate every manifest path before writing anything, so a
-			// malicious path aborts the download instead of leaving a
-			// partial folder behind.
-			dests := make([]string, len(d.Files))
-			for i, f := range d.Files {
-				dest, err := skills.SafeJoin(dir, f.Path)
-				if err != nil {
-					return err
-				}
-				dests[i] = dest
-			}
-
-			if err := os.MkdirAll(dir, 0o755); err != nil {
+			written, err := skills.Reconstruct(dir, skillBundle(d), downloaderFor(cmd))
+			if err != nil {
 				return err
 			}
-
-			// SKILL.md — raw bytes, verbatim.
-			mdPath := filepath.Join(dir, "SKILL.md")
-			if err := os.WriteFile(mdPath, []byte(d.RawSkillMD), 0o644); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s (%s)\n", mdPath, resHumanBytes(int64(len(d.RawSkillMD))))
-
-			for i, f := range d.Files {
-				if f.DownloadURL == "" {
-					return fmt.Errorf("no download URL for %s", f.Path)
-				}
-				if err := downloadToFile(cmd, f.DownloadURL, dests[i]); err != nil {
-					return fmt.Errorf("download %s: %w", f.Path, err)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s (%s)\n", dests[i], resHumanBytes(f.SizeBytes))
+			for _, w := range written {
+				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s (%s)\n", w.Dest, resHumanBytes(w.SizeBytes))
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "Downloaded skill %q to %s (%d file(s) + SKILL.md)\n",
@@ -72,6 +47,26 @@ func newSkillsDownloadCmd() *cobra.Command {
 	}
 
 	return cmd
+}
+
+// skillBundle adapts a skillDetail (the skills API read shape) into the
+// transport-agnostic skills.Bundle used by the shared reconstruction helper.
+func skillBundle(d skillDetail) skills.Bundle {
+	files := make([]skills.BundleFile, len(d.Files))
+	for i, f := range d.Files {
+		files[i] = skills.BundleFile{
+			Path:        f.Path,
+			DownloadURL: f.DownloadURL,
+			SizeBytes:   f.SizeBytes,
+		}
+	}
+	return skills.Bundle{RawSkillMD: d.RawSkillMD, Files: files}
+}
+
+// downloaderFor returns a skills.Downloader bound to the command's context so
+// presigned-URL fetches honor cancellation/timeouts.
+func downloaderFor(cmd *cobra.Command) skills.Downloader {
+	return func(url, dest string) error { return downloadToFile(cmd, url, dest) }
 }
 
 // downloadToFile fetches a presigned URL into dest, creating parent

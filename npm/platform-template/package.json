@@ -1,0 +1,16 @@
+{
+  "name": "@promptvm/cli-darwin-arm64",
+  "version": "0.0.0",
+  "description": "Prebuilt PromptVM CLI binary for darwin-arm64. Installed automatically as an optional dependency of `promptvm`.",
+  "license": "MIT",
+  "homepage": "https://github.com/AIEngineering26/promptvm-cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AIEngineering26/promptvm-cli.git"
+  },
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "files": [
+    "bin/promptvm"
+  ]
+}
