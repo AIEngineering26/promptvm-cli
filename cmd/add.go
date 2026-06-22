@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -14,6 +16,13 @@ import (
 	"github.com/AIEngineering26/promptvm-cli/internal/skills"
 	"github.com/spf13/cobra"
 )
+
+// slugPattern bounds an add reference segment to lowercase kebab-case. This is
+// the single security chokepoint that keeps a hostile reference (e.g.
+// "../../etc") from ever reaching filepath.Join when building the install
+// target — only [a-z0-9-] segments are accepted, so "/", "..", "\" and
+// absolute paths are rejected before the slug is used as a directory name.
+var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,127}$`)
 
 const (
 	// resolveTimeout bounds the anonymous resolve GET. A slow network surfaces
@@ -144,27 +153,34 @@ func parseAddRef(ref string) (creator, slug string, err error) {
 	parts := strings.Split(ref, "/")
 	switch len(parts) {
 	case 1:
-		if parts[0] == "" {
-			return "", "", errors.New("a skill slug is required")
+		if !slugPattern.MatchString(parts[0]) {
+			return "", "", invalidRefError(ref)
 		}
 		return "", parts[0], nil
 	case 2:
-		if parts[0] == "" || parts[1] == "" {
-			return "", "", fmt.Errorf("invalid reference %q: expected <slug> or <creator>/<slug>", ref)
+		// Both segments must be clean kebab-case. Validating the slug here is
+		// what prevents path traversal in the install target; the creator is
+		// held to the same rule for consistency and safe URL building.
+		if !slugPattern.MatchString(parts[0]) || !slugPattern.MatchString(parts[1]) {
+			return "", "", invalidRefError(ref)
 		}
 		return parts[0], parts[1], nil
 	default:
-		return "", "", fmt.Errorf("invalid reference %q: expected <slug> or <creator>/<slug>", ref)
+		return "", "", invalidRefError(ref)
 	}
+}
+
+func invalidRefError(ref string) error {
+	return fmt.Errorf("invalid reference %q: expected <slug> or <creator>/<slug> using lowercase letters, numbers, and hyphens", ref)
 }
 
 // resolveSkillPath builds the public resolve path. The bare-slug form hits
 // GET /api/v1/skills/s/:slug; a creator segment is passed through as a query
 // param so the backend can disambiguate when slugs aren't globally unique.
 func resolveSkillPath(creator, slug string) string {
-	base := "/api/v1/skills/s/" + slug
+	base := "/api/v1/skills/s/" + url.PathEscape(slug)
 	if creator != "" {
-		return base + "?creator=" + creator
+		return base + "?creator=" + url.QueryEscape(creator)
 	}
 	return base
 }
@@ -239,9 +255,9 @@ func fireInstallCounter(cmd *cobra.Command, caller *api.Caller, creator, slug st
 	ctx, cancel := context.WithTimeout(context.Background(), installCounterTimeout)
 	defer cancel()
 
-	path := "/api/v1/skills/s/" + slug + "/install"
+	path := "/api/v1/skills/s/" + url.PathEscape(slug) + "/install"
 	if creator != "" {
-		path += "?creator=" + creator
+		path += "?creator=" + url.QueryEscape(creator)
 	}
 	if err := caller.PostBestEffort(ctx, path, nil); err != nil {
 		if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {

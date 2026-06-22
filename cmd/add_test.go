@@ -28,6 +28,13 @@ func TestParseAddRef(t *testing.T) {
 		{"too many segments", "a/b/c", "", "", true},
 		{"empty creator", "/pdf", "", "", true},
 		{"empty slug", "acme/", "", "", true},
+		{"path traversal slug", "../../etc", "", "", true},
+		{"dot segment", "..", "", "", true},
+		{"absolute path", "/etc/passwd", "", "", true},
+		{"backslash traversal", "..\\windows", "", "", true},
+		{"uppercase rejected", "PDF-Toolkit", "", "", true},
+		{"traversal in creator", "../etc/pdf", "", "", true},
+		{"leading hyphen rejected", "-pdf", "", "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
