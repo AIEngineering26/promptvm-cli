@@ -106,7 +106,9 @@ func fakeServer(t *testing.T) (*httptest.Server, *bool) {
 	var baseURL string
 	mux.HandleFunc("/api/v1/skills/s/found", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"slug":"found","name":"Found","raw_skill_md":"---\nname: found\n---\nbody","files":[{"path":"a.txt","downloadUrl":"` + baseURL + `/dl","sizeBytes":5}]}}`))
+		// Public slug endpoint returns the skill object UN-wrapped (no `data`
+		// envelope) — must match the real API contract.
+		_, _ = w.Write([]byte(`{"slug":"found","name":"Found","raw_skill_md":"---\nname: found\n---\nbody","files":[{"path":"a.txt","downloadUrl":"` + baseURL + `/dl","sizeBytes":5}]}`))
 	})
 	mux.HandleFunc("/api/v1/skills/s/missing", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
