@@ -82,11 +82,18 @@ func newAddCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(cmd.Context(), resolveTimeout)
 			defer cancel()
 
-			var resp skillResponse
+			// The PUBLIC slug endpoint returns the skill object at the top
+			// level (un-wrapped) — unlike the authenticated by-id endpoint used
+			// by `skills download`, which nests it under `data`. Decode directly
+			// into skillDetail.
+			var resp skillDetail
 			if err := caller.GetWithContext(ctx, resolveSkillPath(creator, slug), &resp); err != nil {
 				return mapResolveError(err, args[0])
 			}
-			bundle := skillBundle(resp.Data)
+			if resp.RawSkillMD == "" {
+				return fmt.Errorf("Skill %q returned no content", args[0])
+			}
+			bundle := skillBundle(resp)
 
 			// Collision handling.
 			if _, statErr := os.Stat(target); statErr == nil && !dryRun {
