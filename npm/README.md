@@ -1,6 +1,6 @@
 # npm distribution for the PromptVM CLI
 
-This directory holds the npm packaging that makes `npx promptvm add <slug>` work.
+This directory holds the npm packaging that makes `npx @promptvm/cli add <slug>` work.
 It follows the **`optionalDependencies` pattern** used by esbuild / Turbo / swc
 (Option B in the PRD) — the Go binary stays the single source of truth, and npm
 is a thin delivery shim. There is **no `postinstall` download script**.
@@ -19,7 +19,7 @@ npm/
 
 ## How it works
 
-1. A user runs `npm i -g promptvm` (or `npx promptvm …`). npm reads the root
+1. A user runs `npm i -g promptvm` (or `npx @promptvm/cli …`). npm reads the root
    package's `optionalDependencies`, which list one package per platform:
 
    - `@promptvm/cli-darwin-arm64`

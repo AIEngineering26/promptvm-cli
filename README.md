@@ -12,7 +12,7 @@ Install a marketplace skill into your local Claude Code skills directory — no
 login, no workspace:
 
 ```bash
-npx promptvm add image-prompt-architect
+npx @promptvm/cli add pdf
 # or, with a native install:
 promptvm add image-prompt-architect
 ```
@@ -25,7 +25,7 @@ See [`promptvm add`](#promptvm-add--install-a-marketplace-skill).
 ### npm / npx (no native install)
 
 ```bash
-npx promptvm add <slug>        # one-off, no global install
+npx @promptvm/cli add <slug>        # one-off, no global install
 npm install -g promptvm        # or install the launcher globally
 ```
 
