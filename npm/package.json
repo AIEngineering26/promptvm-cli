@@ -1,7 +1,7 @@
 {
-  "name": "promptvm",
+  "name": "@promptvm/cli",
   "version": "0.0.0",
-  "description": "The official CLI for the PromptVM platform — install marketplace skills with `npx promptvm add <slug>`.",
+  "description": "The official CLI for the PromptVM platform — install marketplace skills with `npx @promptvm/cli add <slug>`.",
   "license": "MIT",
   "homepage": "https://github.com/AIEngineering26/promptvm-cli",
   "repository": {

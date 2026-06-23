@@ -1,6 +1,6 @@
 # Runbook: publishing the PromptVM CLI to npm
 
-`npx promptvm add <slug>` is delivered via npm using the **`optionalDependencies`
+`npx @promptvm/cli add <slug>` is delivered via npm using the **`optionalDependencies`
 pattern** (esbuild/Turbo/swc model). The Go binary remains the single source of
 truth; npm only ships the prebuilt artifacts goreleaser already builds. See
 [`npm/README.md`](../../npm/README.md) for the package layout.
@@ -58,6 +58,6 @@ node scripts/build-npm-packages.mjs --version 0.0.0-dev --dry-run
 On a clean machine (matching one of the published platforms):
 
 ```bash
-npx promptvm@X.Y.Z version
-npx promptvm@X.Y.Z add <known-slug>   # writes ~/.claude/skills/<slug>/
+npx @promptvm/cli@X.Y.Z version
+npx @promptvm/cli@X.Y.Z add <known-slug>   # writes ~/.claude/skills/<slug>/
 ```
