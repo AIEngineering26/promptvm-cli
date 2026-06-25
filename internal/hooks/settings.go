@@ -15,6 +15,10 @@ type Scope string
 const (
 	ScopeProject Scope = "project"
 	ScopeUser    Scope = "user"
+	// ScopeLocal targets .claude/settings.local.json — the per-machine,
+	// gitignored project settings tier Claude Code reads with highest
+	// precedence. Added for context-sync (DX-2).
+	ScopeLocal Scope = "local"
 )
 
 // SettingsFilePath returns the path to the Claude Code settings.json for the given scope.
@@ -26,6 +30,12 @@ func SettingsFilePath(scope Scope) (string, error) {
 			return "", err
 		}
 		return filepath.Join(cwd, ".claude", "settings.json"), nil
+	case ScopeLocal:
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(cwd, ".claude", "settings.local.json"), nil
 	case ScopeUser:
 		home, err := os.UserHomeDir()
 		if err != nil {
