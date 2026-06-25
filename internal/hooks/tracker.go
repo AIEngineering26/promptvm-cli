@@ -16,6 +16,12 @@ func TrackerFilePath(scope Scope) (string, error) {
 			return "", err
 		}
 		return filepath.Join(cwd, ".claude", ".promptvm-hooks.json"), nil
+	case ScopeLocal:
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(cwd, ".claude", ".promptvm-hooks.local.json"), nil
 	case ScopeUser:
 		home, err := os.UserHomeDir()
 		if err != nil {

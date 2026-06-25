@@ -225,6 +225,58 @@ promptvm contexts list
 promptvm contexts list -o json
 ```
 
+### Context Sync — automatic session capture
+
+`promptvm sync` wires Claude Code lifecycle hooks so that when a session **ends**
+or is **compacted**, a distilled, **redacted** context artifact is uploaded into
+the right PromptVM workspace — with no per-session glue work. Capture is opt-in,
+redaction is on by default, and nothing becomes canonical without server-side
+governance.
+
+```bash
+# One-time setup for a repo: writes the manifest + the capture hook + a
+# workspace-bound capture credential. Always preview first with --dry-run.
+promptvm sync init --scope project --dry-run
+promptvm sync init --workspace ws_123 --mode summary --yes
+
+# Inspect the resolved config, target, pending spool, and installed hooks
+promptvm sync status
+promptvm sync status -o json
+
+# Manually capture (no hook needed) or backfill
+promptvm sync push --last
+promptvm sync push --session <session-id>
+
+# Refresh the local context block (CLAUDE.md) with promoted captures
+promptvm sync export
+
+# Hook-invoked uploader (reads the event JSON from stdin; self-detaches). Not
+# typically run by hand — `sync init` installs it for you.
+promptvm sync run
+```
+
+**Scopes** (one vocabulary, `local | project | user`):
+
+| Scope     | Manifest file                        | Settings file                  |
+|-----------|--------------------------------------|--------------------------------|
+| `local`   | `.promptvm/config.local.json` (gitignored) | `.claude/settings.local.json` |
+| `project` | `.promptvm/config.json` (committable)      | `.claude/settings.json`        |
+| `user`    | `<config dir>/promptvm/config.json`        | `~/.claude/settings.json`      |
+
+Resolution precedence is **local → project → user** (most specific wins).
+Capture-policy arrays (`events`, `excludePaths`) **replace** rather than merge,
+so a repo can drop `PreCompact`.
+
+- **Events:** `SessionEnd` (primary) + `PreCompact` (checkpoint) by default; a
+  `SessionStart` reconcile hook is always installed to flush anything that never
+  uploaded.
+- **Non-blocking:** `sync run` self-detaches and exits 0 immediately; on failure
+  the capture is spooled (0600 files in a 0700 dir) and retried on reconcile.
+- **Redaction before egress:** provider token patterns + high-entropy detection +
+  path excludes run client-side; the server runs an authoritative scan too.
+- **Managed settings:** `sync init` aborts and `sync run` no-ops when Claude Code
+  managed settings set `disableAllHooks`.
+
 ### `promptvm add` — install a marketplace skill
 
 `add` is the one-command path for installing a **public marketplace skill** into
