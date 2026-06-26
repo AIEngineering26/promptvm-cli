@@ -45,6 +45,45 @@ func TestRedactAssignmentKeepsKey(t *testing.T) {
 	}
 }
 
+func TestRedactConnectionStringCredentials(t *testing.T) {
+	cases := []struct {
+		name, in, leaked, keep string
+	}{
+		{"postgres", "db at postgres://acme_api:pgX7f2Qv9LmZ0kPw@db.internal:5432/app done",
+			"pgX7f2Qv9LmZ0kPw", "postgres://acme_api:"},
+		{"mysql", "mysql://root:S3cr3tPass@10.0.0.4/orders", "S3cr3tPass", "mysql://root:"},
+		{"redis-no-user", "redis://:r3disPass99@cache:6379", "r3disPass99", "redis://:"},
+		{"mongodb", "mongodb://svc:m0ngoPwd123@cluster0.mongodb.net/db", "m0ngoPwd123", "mongodb://svc:"},
+		{"https-basic", "curl https://user:tok3nABC@api.example.com/v1", "tok3nABC", "https://user:"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := Redact(c.in, nil)
+			if !r.Applied {
+				t.Fatalf("expected redaction for %q", c.in)
+			}
+			if strings.Contains(r.Text, c.leaked) {
+				t.Errorf("password leaked: %q", r.Text)
+			}
+			if !strings.Contains(r.Text, c.keep) {
+				t.Errorf("scheme/user context should be preserved, got %q", r.Text)
+			}
+			if !strings.Contains(r.Text, placeholder) {
+				t.Errorf("expected placeholder, got %q", r.Text)
+			}
+		})
+	}
+}
+
+func TestRedactPlainURLUntouched(t *testing.T) {
+	// A URL with no embedded credentials must not be altered.
+	in := "see https://docs.example.com/guide and http://localhost:3000/health"
+	r := Redact(in, nil)
+	if r.Applied || r.Text != in {
+		t.Errorf("plain URLs should be untouched, got applied=%v text=%q", r.Applied, r.Text)
+	}
+}
+
 func TestRedactHighEntropyToken(t *testing.T) {
 	// A long random-looking base64 blob with no provider prefix.
 	secret := "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWprbG1ub3A"

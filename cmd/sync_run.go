@@ -172,6 +172,7 @@ func buildRequest(in HookInput, repoRoot, workspace string, mode capture.Mode, r
 	}
 
 	var summary string
+	var redactionApplied bool
 	if mode != capture.ModeMetadata {
 		parsed, err := transcript.Read(in.TranscriptPath)
 		if err == nil {
@@ -181,8 +182,13 @@ func buildRequest(in HookInput, repoRoot, workspace string, mode capture.Mode, r
 			if resolved.Redact {
 				r := redact.Redact(text, resolved.ExcludePaths)
 				text = r.Text
-				// Redact secrets in command lines too.
+				redactionApplied = r.Applied
+				// Redact secrets in command lines too, tracking whether it fired.
+				before := strings.Join(meta.Commands, "\x00")
 				meta.Commands = redactStrings(meta.Commands)
+				if strings.Join(meta.Commands, "\x00") != before {
+					redactionApplied = true
+				}
 			}
 			// TODO(context-sync): richer local distillation. v1 ships a cheap
 			// heuristic summary; server-side distillation (AI-2) enriches it.
@@ -191,13 +197,14 @@ func buildRequest(in HookInput, repoRoot, workspace string, mode capture.Mode, r
 	}
 
 	return &capture.IngestRequest{
-		WorkspaceID:     workspace,
-		ClaudeSessionID: in.SessionID,
-		Source:          "claude-code",
-		CaptureMode:     mode,
-		Summary:         summary,
-		Metadata:        meta,
-		OccurredAt:      time.Now().UTC().Format(time.RFC3339),
+		WorkspaceID:      workspace,
+		ClaudeSessionID:  in.SessionID,
+		Source:           "claude-code",
+		CaptureMode:      mode,
+		Summary:          summary,
+		Metadata:         meta,
+		OccurredAt:       time.Now().UTC().Format(time.RFC3339),
+		RedactionApplied: redactionApplied,
 	}
 }
 
