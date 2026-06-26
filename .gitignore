@@ -19,3 +19,9 @@ go.work.sum
 Thumbs.db
 coverage.out
 coverage.html
+
+# Root npm shim is SOURCE (not a built binary) — must be committed for npm packaging
+!npm/bin/
+!npm/bin/promptvm.js
+npm/bin/promptvm
+npm/bin/promptvm.exe
