@@ -29,7 +29,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, cpSync, copyFileSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, cpSync, copyFileSync, readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -147,15 +147,21 @@ function main() {
 
 function findBinary(distRoot, t) {
   if (!existsSync(distRoot)) return null;
-  // Common goreleaser dir shapes: promptvm_<goos>_<goarch>, with possible
-  // _v1 / _amd64v1 suffixes. Probe a few candidates.
-  const candidates = [
-    `promptvm_${t.goos}_${t.goarch}`,
-    `promptvm_${t.goos}_${t.goarch}_v1`,
-  ];
-  for (const c of candidates) {
+  const prefix = `promptvm_${t.goos}_${t.goarch}`;
+  // Fast path: the exact dir or the common amd64 `_v1` variant.
+  for (const c of [prefix, `${prefix}_v1`]) {
     const p = join(distRoot, c, t.exe);
     if (existsSync(p)) return p;
+  }
+  // goreleaser tags builds with a micro-architecture variant suffix that varies
+  // by Go/goreleaser version (`_v1` for amd64, `_v8.0` for arm64, ...). Match
+  // any `promptvm_<goos>_<goarch>[_<variant>]` dir so the publish doesn't break
+  // when that suffix changes.
+  for (const d of readdirSync(distRoot)) {
+    if (d === prefix || d.startsWith(`${prefix}_`)) {
+      const p = join(distRoot, d, t.exe);
+      if (existsSync(p)) return p;
+    }
   }
   return null;
 }
