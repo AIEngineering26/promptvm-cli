@@ -40,6 +40,9 @@ type IngestRequest struct {
 	Metadata        Metadata `json:"metadata"`
 	ContentHash     string   `json:"contentHash"`
 	OccurredAt      string   `json:"occurredAt"`
+	// RedactionApplied records whether client-side redaction actually replaced
+	// any secret span in this capture (provenance for the governance UI).
+	RedactionApplied bool `json:"redactionApplied"`
 }
 
 // IngestResponse is the server reply. Status is one of accepted | deduped |

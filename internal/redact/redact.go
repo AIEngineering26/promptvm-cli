@@ -44,6 +44,15 @@ var providerPatterns = []*regexp.Regexp{
 var assignmentPattern = regexp.MustCompile(
 	`(?i)\b([A-Za-z0-9_\-.]*(?:secret|token|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth)[A-Za-z0-9_\-.]*)\s*[:=]\s*['"]?([^\s'"]{6,})['"]?`)
 
+// urlCredentialPattern matches `scheme://user:password@host` connection strings
+// and redacts the password span only (keeping scheme/user/host for context).
+// Connection strings — postgres/mysql/redis/mongodb/amqp/https-basic-auth — embed
+// credentials that none of the other layers reliably catch: the password isn't a
+// known provider shape, isn't an assignment (`key=value`), and DB passwords are
+// frequently shorter than the 24-char high-entropy threshold. The user segment is
+// optional so `redis://:pass@host` is covered too.
+var urlCredentialPattern = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.\-]*://[^:/?#@\s]*:)([^@/?#\s]+)(@)`)
+
 // entropyTokenPattern isolates candidate high-entropy runs for layer 2.
 var entropyTokenPattern = regexp.MustCompile(`[A-Za-z0-9+/=_\-]{24,}`)
 
@@ -129,6 +138,16 @@ func Redact(text string, excludePaths []string) Result {
 			text = re.ReplaceAllString(text, placeholder)
 		}
 	}
+
+	// Connection-string credentials: redact the password span, keep the rest.
+	text = urlCredentialPattern.ReplaceAllStringFunc(text, func(m string) string {
+		sub := urlCredentialPattern.FindStringSubmatch(m)
+		if len(sub) < 4 {
+			return m
+		}
+		applied = true
+		return sub[1] + placeholder + sub[3]
+	})
 
 	// Assignment values (redact value, keep the key for context).
 	text = assignmentPattern.ReplaceAllStringFunc(text, func(m string) string {
