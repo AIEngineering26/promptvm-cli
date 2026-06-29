@@ -53,6 +53,59 @@ func Detect(dir string) (*Repo, bool) {
 	}, true
 }
 
+// Slug normalizes a git remote URL to a canonical "owner/repo" project slug
+// (FR-7): the last two path segments, with any ".git" suffix and surrounding
+// noise stripped. It collapses the common remote shapes to the same value:
+//
+//	git@github.com:owner/repo.git        → owner/repo
+//	https://github.com/owner/repo.git    → owner/repo
+//	https://github.com/owner/repo        → owner/repo
+//	ssh://git@host:22/owner/repo.git     → owner/repo
+//
+// Returns "" when no usable owner/repo can be derived (callers fall back to the
+// repo-root basename for the "Local / no remote" bucket, FR-10).
+func Slug(remoteURL string) string {
+	s := strings.TrimSpace(remoteURL)
+	if s == "" {
+		return ""
+	}
+
+	// Drop a scheme:// prefix (https://, ssh://, git://).
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	// Drop user@ credentials (git@github.com:..., user@host/...).
+	if i := strings.LastIndex(s, "@"); i >= 0 {
+		s = s[i+1:]
+	}
+	// Normalize the scp-style host:owner/repo separator to a slash.
+	s = strings.Replace(s, ":", "/", 1)
+	// Strip any trailing slashes and a trailing .git.
+	s = strings.TrimSuffix(strings.TrimRight(s, "/"), ".git")
+
+	parts := strings.Split(s, "/")
+	// Keep only non-empty segments.
+	clean := parts[:0]
+	for _, p := range parts {
+		if p != "" {
+			clean = append(clean, p)
+		}
+	}
+	if len(clean) < 2 {
+		return ""
+	}
+	owner := clean[len(clean)-2]
+	repo := clean[len(clean)-1]
+	// Skip a bare host with no owner (e.g. "github.com/repo" → not owner/repo).
+	if strings.Contains(owner, ".") && len(clean) == 2 {
+		return ""
+	}
+	if owner == "" || repo == "" {
+		return ""
+	}
+	return owner + "/" + repo
+}
+
 // EnsureGitignore makes sure pattern appears in <root>/.gitignore. It reads the
 // file (creating it if absent), checks for an exact-line match, and appends the
 // pattern atomically only if missing. Returns true if it added the pattern.
