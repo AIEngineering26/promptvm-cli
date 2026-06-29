@@ -88,3 +88,22 @@ func TestDetectRepo(t *testing.T) {
 		t.Errorf("RemoteURL = %q", repo.RemoteURL)
 	}
 }
+
+func TestSlug(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"git@github.com:rmadrazo97/ai-weather.git", "rmadrazo97/ai-weather"},
+		{"https://github.com/rmadrazo97/ai-weather.git", "rmadrazo97/ai-weather"},
+		{"https://github.com/rmadrazo97/ai-weather", "rmadrazo97/ai-weather"},
+		{"ssh://git@github.com/acme/widgets.git", "acme/widgets"},
+		{"git@gitlab.example.com:group/sub/repo.git", "sub/repo"},
+		{"https://github.com/org/repo/", "org/repo"},
+		{"", ""},
+		{"not-a-url", ""},
+		{"github.com/repo", ""},
+	}
+	for _, c := range cases {
+		if got := Slug(c.in); got != c.want {
+			t.Errorf("Slug(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

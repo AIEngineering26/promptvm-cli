@@ -15,6 +15,7 @@ import (
 	"github.com/AIEngineering26/promptvm-cli/internal/managed"
 	"github.com/AIEngineering26/promptvm-cli/internal/manifest"
 	"github.com/AIEngineering26/promptvm-cli/internal/redact"
+	"github.com/AIEngineering26/promptvm-cli/internal/sanitize"
 	"github.com/AIEngineering26/promptvm-cli/internal/spool"
 	"github.com/AIEngineering26/promptvm-cli/internal/transcript"
 	"github.com/spf13/cobra"
@@ -156,43 +157,87 @@ func processHook(cmd *cobra.Command, in HookInput, modeOverride, wsOverride stri
 		return
 	}
 
+	// FR-Q4: drop the most obvious pure-housekeeping low-signal sessions entirely
+	// (/exit, /clear, /model, /upgrade, bare pleasantries). Everything else still
+	// uploads — with LowSignal set so the backend can govern it server-side.
+	if req.LowSignal && isHousekeepingOnly(req.Summary) {
+		fmt.Fprintln(logw, "sync run: skipping low-signal housekeeping session")
+		return
+	}
+
 	uploadOrSpool(cmd, req)
 }
 
-// buildRequest assembles the ingest payload for a single capture, applying
-// client-side layered redaction BEFORE any content is attached (SEC-3/FR-12).
+// buildRequest assembles the ingest payload for a single capture. The contractual
+// content pipeline is sanitize → redact → hash/store (FR-Q3): every string is run
+// through sanitize.Sanitize (strip ANSI/CC wrappers/escaped newlines) BEFORE the
+// client-side layered redaction (SEC-3/FR-12), so secrets hidden inside control
+// noise are still caught and the canonical hash is stable.
 func buildRequest(in HookInput, repoRoot, workspace string, mode capture.Mode, resolved *manifest.Resolved) *capture.IngestRequest {
 	repo, _ := gitutil.Detect(repoRoot)
 
-	meta := capture.Metadata{
-		RepoURL: repo.RemoteURL,
-		Branch:  repo.Branch,
-		HeadSha: repo.HeadSha,
-		Outcome: in.Reason,
+	// Normalized project identity (FR-7/FR-10): owner/repo from the remote, or
+	// the repo-root basename for the "Local / no remote" bucket.
+	repoSlug := gitutil.Slug(repo.RemoteURL)
+	projectKey := repoSlug
+	if projectKey == "" {
+		projectKey = filepath.Base(repoRoot)
 	}
+
+	meta := capture.Metadata{
+		RepoURL:    repo.RemoteURL,
+		Branch:     repo.Branch,
+		HeadSha:    repo.HeadSha,
+		Outcome:    in.Reason,
+		ProjectKey: projectKey,
+		RepoSlug:   repoSlug,
+	}
+
+	home, _ := os.UserHomeDir()
 
 	var summary string
 	var redactionApplied bool
+	var lowSignal bool
 	if mode != capture.ModeMetadata {
 		parsed, err := transcript.Read(in.TranscriptPath)
 		if err == nil {
-			meta.FilesTouched = filterPaths(parsed.FilesTouched, resolved)
-			meta.Commands = parsed.Commands
-			text := parsed.Text
+			// Files: sanitize → repo-relative → exclude-glob filter (FR-Q5/CAPQ-7).
+			meta.FilesTouched = cleanPaths(parsed.FilesTouched, repoRoot, home, resolved)
+
+			// Commands: sanitize → redact (when enabled).
+			cmds := sanitize.Strings(parsed.Commands)
+
+			// Conversation text: sanitize always; redact when enabled.
+			text := sanitize.Sanitize(parsed.Text)
 			if resolved.Redact {
 				r := redact.Redact(text, resolved.ExcludePaths)
 				text = r.Text
 				redactionApplied = r.Applied
-				// Redact secrets in command lines too, tracking whether it fired.
-				before := strings.Join(meta.Commands, "\x00")
-				meta.Commands = redactStrings(meta.Commands)
-				if strings.Join(meta.Commands, "\x00") != before {
+				before := strings.Join(cmds, "\x00")
+				cmds = redactStrings(cmds)
+				if strings.Join(cmds, "\x00") != before {
 					redactionApplied = true
 				}
 			}
-			// TODO(context-sync): richer local distillation. v1 ships a cheap
-			// heuristic summary; server-side distillation (AI-2) enriches it.
-			summary = heuristicSummary(text, parsed.FilesTouched, parsed.Commands)
+			meta.Commands = cmds
+
+			// Session identity (FR-1/FR-5): the first REAL user prompt drives the
+			// task + a deterministic title/description. Each value is already
+			// sanitized + redacted.
+			firstPrompt := firstRealUserPrompt(parsed.UserTexts, resolved)
+			// taskAtHand is capped to the backend's CaptureIngestMetadataSchema
+			// maxLength (2000) — an over-long first prompt would otherwise 400 the
+			// whole ingest and spool-retry forever. The full firstPrompt is kept
+			// for title/description derivation below.
+			meta.TaskAtHand = truncateChars(firstPrompt, 2000)
+			meta.Title = deriveTitle(cleanField(parsed.AITitle, resolved), firstPrompt, repoSlug)
+			meta.Description = deriveDescription(firstPrompt)
+
+			summary = heuristicSummary(text, meta.FilesTouched, cmds)
+
+			// FR-Q4: low-signal = no real user turn AND no tool work.
+			hasToolWork := len(meta.FilesTouched) > 0 || len(cmds) > 0
+			lowSignal = firstPrompt == "" && !hasToolWork
 		}
 	}
 
@@ -205,6 +250,7 @@ func buildRequest(in HookInput, repoRoot, workspace string, mode capture.Mode, r
 		Metadata:         meta,
 		OccurredAt:       time.Now().UTC().Format(time.RFC3339),
 		RedactionApplied: redactionApplied,
+		LowSignal:        lowSignal,
 	}
 }
 
@@ -290,6 +336,12 @@ func reconcileTranscripts(cmd *cobra.Command, repoRoot string, resolved *manifes
 			Reason:         "reconcile",
 		}
 		req := buildRequest(in, repoRoot, workspace, capture.Mode(resolved.Mode), resolved)
+		// Drop pure-housekeeping low-signal sessions (FR-Q4); mark them captured
+		// so they are not rescanned on every reconcile.
+		if req.LowSignal && isHousekeepingOnly(req.Summary) {
+			markCaptured(sessionID)
+			continue
+		}
 		req.ContentHash = req.ComputeContentHash()
 		uploadOrSpool(cmd, req)
 	}
@@ -330,20 +382,55 @@ func markCaptured(sessionID string) {
 	_ = led.Save()
 }
 
-// filterPaths drops file paths that match an excluded glob (SEC-3 path layer).
-func filterPaths(paths []string, resolved *manifest.Resolved) []string {
-	if !resolved.Redact || len(resolved.ExcludePaths) == 0 {
-		return paths
-	}
+// cleanPaths sanitizes each file path, normalizes it to repo-relative, runs it
+// through the same secret-redaction pass as the rest of the payload (so a secret
+// embedded in a path segment is scrubbed), drops any path matched by an excluded
+// glob (SEC-3 path layer), and dedupes (FR-Q5). Ordering is sanitize → redact,
+// matching the contractual content pipeline.
+func cleanPaths(paths []string, repoRoot, home string, resolved *manifest.Resolved) []string {
 	out := make([]string, 0, len(paths))
+	seen := map[string]bool{}
 	for _, p := range paths {
-		r := redact.Redact(p, resolved.ExcludePaths)
-		if r.Applied && strings.TrimSpace(r.Text) == "" {
-			continue // whole path was excluded
+		p = normalizePath(sanitize.Sanitize(p), repoRoot, home)
+		if p == "" {
+			continue
 		}
+		if resolved.Redact {
+			r := redact.Redact(p, resolved.ExcludePaths)
+			p = strings.TrimSpace(r.Text)
+			if p == "" {
+				continue // whole path was excluded or redacted away
+			}
+		}
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
 		out = append(out, p)
 	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
+}
+
+// normalizePath rewrites an absolute path to be repo-relative, or home-relative
+// (~/...) when it falls outside the repo, so captured paths never leak machine
+// layout and read cleanly in the inbox.
+func normalizePath(p, repoRoot, home string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if repoRoot != "" && filepath.IsAbs(p) {
+		if rel, err := filepath.Rel(repoRoot, p); err == nil && !strings.HasPrefix(rel, "..") {
+			return rel
+		}
+	}
+	if home != "" && strings.HasPrefix(p, home) {
+		return "~" + strings.TrimPrefix(p, home)
+	}
+	return p
 }
 
 func redactStrings(in []string) []string {
@@ -352,6 +439,138 @@ func redactStrings(in []string) []string {
 		out = append(out, redact.Redact(s, nil).Text)
 	}
 	return out
+}
+
+// cleanField sanitizes then (when enabled) redacts a single derived string,
+// honoring the sanitize→redact ordering contract (FR-Q3). It never drops lines
+// (no exclude-path layer) — it only scrubs control noise + secrets.
+func cleanField(s string, resolved *manifest.Resolved) string {
+	s = sanitize.Sanitize(s)
+	if resolved.Redact {
+		s = redact.Redact(s, nil).Text
+	}
+	return strings.TrimSpace(s)
+}
+
+// firstRealUserPrompt returns the first sanitized+redacted user turn that is a
+// real prompt per FR-Q4: non-empty, and not a slash-command (`/…`) or a leftover
+// Claude Code wrapper (`<…`). Returns "" when the session has no real user turn.
+func firstRealUserPrompt(userTexts []string, resolved *manifest.Resolved) string {
+	for _, raw := range userTexts {
+		clean := cleanField(raw, resolved)
+		if clean == "" {
+			continue
+		}
+		if strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "<") {
+			continue
+		}
+		return clean
+	}
+	return ""
+}
+
+// deriveTitle builds a human title via the FR-1 fallback chain: a transcript ai
+// title → the first ~10 words of the first real user prompt → a deterministic
+// "{repoSlug} session — {date}". The title is NEVER blank.
+func deriveTitle(aiTitle, firstPrompt, repoSlug string) string {
+	if aiTitle != "" {
+		return truncateChars(aiTitle, 80)
+	}
+	if firstPrompt != "" {
+		return truncateChars(firstWords(firstPrompt, 10), 80)
+	}
+	label := repoSlug
+	if label == "" {
+		label = "session"
+	}
+	return fmt.Sprintf("%s session — %s", label, time.Now().UTC().Format("2006-01-02"))
+}
+
+// deriveDescription distills a clean 1–2 sentence description from the first real
+// user prompt. Empty when there is no real prompt.
+func deriveDescription(firstPrompt string) string {
+	if firstPrompt == "" {
+		return ""
+	}
+	return truncateChars(firstSentences(firstPrompt, 2), 300)
+}
+
+// firstWords returns the first n whitespace-separated words of s, with an ellipsis
+// when truncated.
+func firstWords(s string, n int) string {
+	fields := strings.Fields(s)
+	if len(fields) <= n {
+		return strings.Join(fields, " ")
+	}
+	return strings.Join(fields[:n], " ") + "…"
+}
+
+// firstSentences collapses s to a single line and returns its first n sentences.
+func firstSentences(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	count := 0
+	for i, r := range s {
+		if r == '.' || r == '!' || r == '?' {
+			count++
+			if count >= n {
+				return strings.TrimSpace(s[:i+1])
+			}
+		}
+	}
+	return s
+}
+
+// truncateChars rune-safely caps s to at most max characters, appending an
+// ellipsis (counted within the budget) when it had to cut — so callers can rely
+// on the result satisfying a hard maxLength bound (e.g. the backend's 2000-char
+// taskAtHand schema cap).
+func truncateChars(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max <= 1 {
+		return string(r[:max])
+	}
+	return strings.TrimSpace(string(r[:max-1])) + "…"
+}
+
+// housekeepingCommands are slash-commands with no task value (FR-Q4 drop case).
+var housekeepingCommands = map[string]bool{
+	"/exit": true, "/clear": true, "/model": true, "/upgrade": true,
+	"/logout": true, "/login": true, "/quit": true, "/bye": true, "/help": true,
+}
+
+// pleasantries are bare farewells/acks with no task value (FR-Q4 drop case).
+var pleasantries = map[string]bool{
+	"see ya": true, "see ya!": true, "bye": true, "bye!": true, "goodbye": true,
+	"goodbye!": true, "catch you later": true, "catch you later!": true,
+	"thanks": true, "thank you": true, "ok": true, "okay": true, "cool": true,
+}
+
+// isHousekeepingOnly reports whether text contains nothing but housekeeping
+// slash-commands and/or bare pleasantries. It is deliberately conservative: any
+// substantive line, or any text over a short length bound, makes it false so a
+// real session is never silently dropped.
+func isHousekeepingOnly(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if t == "" {
+		return true
+	}
+	if len(t) > 120 {
+		return false
+	}
+	for _, line := range strings.Split(t, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || pleasantries[line] {
+			continue
+		}
+		if fields := strings.Fields(line); len(fields) > 0 && housekeepingCommands[fields[0]] {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // heuristicSummary builds a cheap local summary for `summary` mode. Server-side
