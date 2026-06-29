@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -452,11 +453,29 @@ func cleanField(s string, resolved *manifest.Resolved) string {
 	return strings.TrimSpace(s)
 }
 
+// ccCommandTurn matches a RAW user turn that is a Claude Code command/wrapper
+// artifact rather than a genuine prompt: the (trimmed) text BEGINS with one of
+// the command / command-stdout / caveat wrapper tags. The tag set mirrors
+// sanitize's ccWrapper vocabulary — exactly the wrappers sanitize UNWRAPS, which
+// is why this must be checked on the raw text BEFORE sanitize runs: a turn like
+// <local-command-stdout>Cancelled</local-command-stdout> unwraps to a bare
+// "Cancelled" that would otherwise pass as a real prompt (CAPQ D1). (?is):
+// i=case-insensitive, s=dotall.
+var ccCommandTurn = regexp.MustCompile(`(?is)^\s*<(?:command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat|task-notification)\b[^>]*>`)
+
 // firstRealUserPrompt returns the first sanitized+redacted user turn that is a
-// real prompt per FR-Q4: non-empty, and not a slash-command (`/…`) or a leftover
-// Claude Code wrapper (`<…`). Returns "" when the session has no real user turn.
+// real prompt per FR-Q4: non-empty, not a Claude Code command/wrapper/stdout/
+// caveat turn (D1), and not a slash-command (`/…`) or a leftover wrapper (`<…`).
+// Returns "" when the session has no real user turn.
 func firstRealUserPrompt(userTexts []string, resolved *manifest.Resolved) string {
 	for _, raw := range userTexts {
+		// Skip command/wrapper/stdout/caveat turns on the RAW text first: sanitize
+		// unwraps these tags and erases the leading-"<" signal (e.g.
+		// <local-command-stdout>Cancelled</…> → "Cancelled"), so the cleaned-text
+		// prefix checks below cannot catch them on their own (CAPQ D1).
+		if ccCommandTurn.MatchString(raw) {
+			continue
+		}
 		clean := cleanField(raw, resolved)
 		if clean == "" {
 			continue
@@ -565,7 +584,24 @@ func isHousekeepingOnly(text string) bool {
 		if line == "" || pleasantries[line] {
 			continue
 		}
-		if fields := strings.Fields(line); len(fields) > 0 && housekeepingCommands[fields[0]] {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		head := fields[0]
+		// A housekeeping slash-command ("/clear", optionally with args) is fine.
+		if housekeepingCommands[head] {
+			continue
+		}
+		// Real Claude Code transcripts also emit the command's bare <command-message>
+		// echo ("clear" / "exit") on its own line right after the "/clear" wrapper
+		// (CAPQ D3). Treat a single-token line as housekeeping when its slash-form is
+		// a housekeeping command — but only single-token, so a bare word inside a
+		// real sentence ("clear the cache") stays substantive. This path is reached
+		// only for low-signal sessions (no real user prompt), so a genuine one-word
+		// prompt like "clear" cannot be dropped: it sets a first real prompt and the
+		// drop is gated on LowSignal.
+		if len(fields) == 1 && housekeepingCommands["/"+head] {
 			continue
 		}
 		return false
