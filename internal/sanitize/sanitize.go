@@ -65,7 +65,10 @@ func Sanitize(s string) string {
 	// (b) Unwrap Claude Code wrappers, keeping inner text.
 	s = ccWrapper.ReplaceAllString(s, "")
 
-	// (c) Unescape literal escape sequences that leaked as text.
+	// (c) Unescape literal escape sequences that leaked as text. Mandated by the
+	// contract (step c). Tradeoff: this is lossy for legitimate content that
+	// contains a real backslash-n / backslash-t — e.g. Windows paths (C:\name)
+	// or regex/code snippets — which will be corrupted into a newline/tab.
 	s = literalNewline.ReplaceAllString(s, "\n")
 	s = literalTab.ReplaceAllString(s, "\t")
 

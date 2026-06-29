@@ -112,6 +112,52 @@ func TestBuildRequestDerivesSessionIdentity(t *testing.T) {
 	}
 }
 
+// TestBuildRequestCapsTaskAtHand guards the backend CaptureIngestMetadataSchema
+// maxLength (2000) on taskAtHand: an over-long first user prompt must be capped
+// before send so it never 400s the whole ingest, while title/description are
+// still derived from the full prompt.
+func TestBuildRequestCapsTaskAtHand(t *testing.T) {
+	cfgHome := t.TempDir()
+	t.Setenv("HOME", cfgHome)
+	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+
+	repoRoot := t.TempDir()
+	writeManifestFile(t, repoRoot, `{ "workspace": "ws_cap", "capture": { "enabled": true, "events": ["SessionEnd"], "mode": "summary" } }`)
+
+	longPrompt := "Implement the feature. " + strings.Repeat("context ", 600) // > 2000 chars
+	tr := writeRawTranscript(t, repoRoot, "sess-cap", userLine(longPrompt))
+
+	resolved, _ := manifest.Resolve(repoRoot)
+	in := HookInput{SessionID: "sess-cap", TranscriptPath: tr, Cwd: repoRoot, HookEventName: "SessionEnd", Reason: "other"}
+	req := buildRequest(in, repoRoot, "ws_cap", capture.ModeSummary, resolved)
+
+	if n := len([]rune(req.Metadata.TaskAtHand)); n > 2000 {
+		t.Errorf("taskAtHand = %d runes, want <= 2000", n)
+	}
+	if req.Metadata.Title == "" {
+		t.Error("title must still be derived from the full prompt")
+	}
+}
+
+// TestCleanPathsRedactsSecretInPath covers the path-redaction nit: a secret
+// embedded in a captured file path is scrubbed by the same redaction pass as the
+// rest of the payload (sanitize → redact ordering).
+func TestCleanPathsRedactsSecretInPath(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeManifestFile(t, repoRoot, `{ "workspace": "ws_p", "capture": { "enabled": true, "events": ["SessionEnd"], "mode": "summary" } }`)
+	resolved, _ := manifest.Resolve(repoRoot)
+
+	secretPath := filepath.Join(repoRoot, "dump-ghp_012345678901234567890123456789012345.txt")
+	out := cleanPaths([]string{secretPath}, repoRoot, "", resolved)
+
+	if len(out) != 1 {
+		t.Fatalf("cleanPaths = %v, want a single redacted path", out)
+	}
+	if strings.Contains(out[0], "ghp_012345678901234567890123456789012345") {
+		t.Errorf("secret survived path redaction: %q", out[0])
+	}
+}
+
 // TestBuildRequestLowSignalNoUserTurn covers FR-Q4: a session with no real user
 // turn and no tool work is flagged low-signal (but not necessarily dropped).
 func TestBuildRequestLowSignalNoUserTurn(t *testing.T) {

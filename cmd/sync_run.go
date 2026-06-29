@@ -225,7 +225,11 @@ func buildRequest(in HookInput, repoRoot, workspace string, mode capture.Mode, r
 			// task + a deterministic title/description. Each value is already
 			// sanitized + redacted.
 			firstPrompt := firstRealUserPrompt(parsed.UserTexts, resolved)
-			meta.TaskAtHand = firstPrompt
+			// taskAtHand is capped to the backend's CaptureIngestMetadataSchema
+			// maxLength (2000) — an over-long first prompt would otherwise 400 the
+			// whole ingest and spool-retry forever. The full firstPrompt is kept
+			// for title/description derivation below.
+			meta.TaskAtHand = truncateChars(firstPrompt, 2000)
 			meta.Title = deriveTitle(cleanField(parsed.AITitle, resolved), firstPrompt, repoSlug)
 			meta.Description = deriveDescription(firstPrompt)
 
@@ -378,8 +382,11 @@ func markCaptured(sessionID string) {
 	_ = led.Save()
 }
 
-// cleanPaths sanitizes each file path, normalizes it to repo-relative, drops any
-// path matched by an excluded glob (SEC-3 path layer), and dedupes (FR-Q5).
+// cleanPaths sanitizes each file path, normalizes it to repo-relative, runs it
+// through the same secret-redaction pass as the rest of the payload (so a secret
+// embedded in a path segment is scrubbed), drops any path matched by an excluded
+// glob (SEC-3 path layer), and dedupes (FR-Q5). Ordering is sanitize → redact,
+// matching the contractual content pipeline.
 func cleanPaths(paths []string, repoRoot, home string, resolved *manifest.Resolved) []string {
 	out := make([]string, 0, len(paths))
 	seen := map[string]bool{}
@@ -388,10 +395,11 @@ func cleanPaths(paths []string, repoRoot, home string, resolved *manifest.Resolv
 		if p == "" {
 			continue
 		}
-		if resolved.Redact && len(resolved.ExcludePaths) > 0 {
+		if resolved.Redact {
 			r := redact.Redact(p, resolved.ExcludePaths)
-			if r.Applied && strings.TrimSpace(r.Text) == "" {
-				continue // whole path was excluded
+			p = strings.TrimSpace(r.Text)
+			if p == "" {
+				continue // whole path was excluded or redacted away
 			}
 		}
 		if seen[p] {
@@ -512,14 +520,19 @@ func firstSentences(s string, n int) string {
 	return s
 }
 
-// truncateChars rune-safely caps s to max characters, appending an ellipsis when
-// it had to cut.
+// truncateChars rune-safely caps s to at most max characters, appending an
+// ellipsis (counted within the budget) when it had to cut — so callers can rely
+// on the result satisfying a hard maxLength bound (e.g. the backend's 2000-char
+// taskAtHand schema cap).
 func truncateChars(s string, max int) string {
 	r := []rune(s)
 	if len(r) <= max {
 		return s
 	}
-	return strings.TrimSpace(string(r[:max])) + "…"
+	if max <= 1 {
+		return string(r[:max])
+	}
+	return strings.TrimSpace(string(r[:max-1])) + "…"
 }
 
 // housekeepingCommands are slash-commands with no task value (FR-Q4 drop case).
