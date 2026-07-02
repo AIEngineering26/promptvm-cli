@@ -91,7 +91,7 @@ func newAddCmd() *cobra.Command {
 				return mapResolveError(err, args[0])
 			}
 			if resp.RawSkillMD == "" {
-				return fmt.Errorf("Skill %q returned no content", args[0])
+				return fmt.Errorf("Skill %q returned no content", args[0]) //nolint:staticcheck // PRD-mandated user-facing message
 			}
 			bundle := skillBundle(resp)
 
@@ -107,7 +107,7 @@ func newAddCmd() *cobra.Command {
 				// Overwrite: clear the existing folder so stale files don't
 				// linger from a previous version.
 				if err := os.RemoveAll(target); err != nil {
-					return fmt.Errorf("Cannot write to %s: %s", target, err)
+					return fmt.Errorf("Cannot write to %s: %s", target, err) //nolint:staticcheck // PRD-mandated user-facing message
 				}
 			}
 
