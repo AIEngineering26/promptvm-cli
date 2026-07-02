@@ -54,7 +54,7 @@ v1 payoff that closes the capture→review→reuse loop without Phase-2 retrieva
 				ws = resolved.Workspace
 			}
 			if ws == "" {
-				if ws, err = resolveSyncWorkspace(cmd, caller); err != nil {
+				if ws, _, err = resolveSyncWorkspace(caller, ""); err != nil {
 					return err
 				}
 			}

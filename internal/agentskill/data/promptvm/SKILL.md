@@ -21,6 +21,25 @@ server** (tools prefixed `promptvm_*`).
 - Install a Claude Code **hook** from the registry into local settings.
 - Organize content with **workspaces**, **collections**, **directories**.
 - **Search** across an org, or browse / claim **marketplace** listings.
+- **Onboard an environment** end-to-end (`promptvm setup`), enable **Context
+  Sync** session capture, or connect this agent to the hosted **MCP server**
+  (`promptvm mcp install`).
+
+## One-shot setup
+
+`promptvm setup` runs the whole onboarding: login (if needed) → Context Sync
+(`sync init`, non-interactive) → MCP registration for detected clients
+(Claude Code, Codex) → this agent skill. Flags: `--yes` (assume defaults;
+automatic when stdin is not a TTY), `--workspace <uuid|slug|name>`,
+`--device` (headless login), `--skip-mcp`, `--skip-sync`, `--mcp-url <url>`.
+
+```bash
+promptvm setup --yes                  # full onboarding, zero prompts
+promptvm setup --print-agent-prompt  # print the copy-paste block for an agent
+```
+
+If the CLI is missing, install it first: `npm install -g @promptvm/cli`
+(`npx @promptvm/cli <cmd>` also works). Verify with `promptvm version`.
 
 ## Authentication
 
@@ -113,6 +132,39 @@ promptvm search <query> [--org <id>]
 promptvm contexts list                   # catalogue of supported context kinds
 promptvm share ...                       # share links
 ```
+
+### Context Sync (automatic session capture)
+```bash
+promptvm sync init [--workspace <uuid|slug|name>] [--interactive]
+                                         # zero prompts by default: writes the manifest,
+                                         # installs Claude Code capture hooks, mints a
+                                         # workspace-bound capture credential, flushes
+                                         # any pending spool. Workspace names/slugs are
+                                         # normalized to the UUID automatically.
+promptvm sync run                        # hook-invoked uploader (stdin JSON; never blocks)
+promptvm sync status                     # resolved config, manifests consulted, credential
+                                         # file, pending spool, and a state-specific Next hint
+promptvm sync doctor                     # diagnose + repair: normalize workspace → UUID,
+                                         # re-mint a missing credential, reinstall hooks,
+                                         # flush the spool (each check: ok/fixed/failed)
+promptvm sync push                       # capture the current session manually
+promptvm sync export                     # refresh the local context block from promoted captures
+```
+Lifecycle: `init` once per repo → hooks fire `run` on SessionEnd/PreCompact →
+captures upload (or spool offline) → `status` to inspect → `doctor` to repair.
+
+### MCP server connection
+```bash
+promptvm mcp install [--target claude|codex|all] [--scope user|project] [--mcp-url <url>] [--dry-run]
+                                         # claude → `claude mcp add --transport http promptvm <url>`
+                                         #   (or .mcp.json when the binary is absent)
+                                         # codex → merges [mcp_servers.promptvm] into ~/.codex/config.toml
+promptvm mcp print [--target claude|codex|all]
+                                         # print the copy-paste config snippets only
+```
+The MCP endpoint derives from the API base URL (dev-api.promptvm.ai →
+dev-mcp.promptvm.ai; api.promptvm.ai → mcp.promptvm.ai); override with
+`--mcp-url` or `PROMPTVM_MCP_URL`.
 
 ## Using the hosted MCP server
 

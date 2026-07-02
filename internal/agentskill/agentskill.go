@@ -31,7 +31,7 @@ const (
 	// Version is the bundled skill revision. Bump it whenever the embedded
 	// data/promptvm content changes so `agent status` and first-run can detect
 	// that an update is available.
-	Version = 1
+	Version = 2
 
 	// embedRoot is the path of the embedded skill folder inside content.
 	embedRoot = "data/promptvm"

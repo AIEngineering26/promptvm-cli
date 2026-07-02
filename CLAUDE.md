@@ -33,6 +33,16 @@ cli/
 │   ├── agent_uninstall.go  ← agent uninstall
 │   ├── agent_status.go     ← agent status (bundled vs installed)
 │   ├── agent_autoinstall.go← first-run opt-out auto-install (PersistentPreRun)
+│   ├── setup.go            ← one-shot onboarding (auth → sync init → mcp install → skill)
+│   ├── mcp.go              ← mcp parent (MCP URL resolution helpers)
+│   ├── mcp_install.go      ← mcp install (claude binary / .mcp.json, ~/.codex/config.toml)
+│   ├── mcp_print.go        ← mcp print (per-client snippets, writes nothing)
+│   ├── sync.go             ← sync parent (Context Sync)
+│   ├── sync_init.go        ← sync init (zero-prompt; workspace → UUID normalization)
+│   ├── sync_run.go         ← sync run (hook-invoked uploader; spool reasons)
+│   ├── sync_status.go      ← sync status (manifests consulted + Next hint)
+│   ├── sync_doctor.go      ← sync doctor (diagnose + repair)
+│   ├── sync_common.go      ← shared workspace/spool helpers (isUUID, normalizeWorkspace)
 │   ├── hooks.go            ← hooks parent command
 │   ├── hooks_install.go    ← hooks install <slug>
 │   ├── hooks_browse.go     ← hooks browse (list from API)
@@ -57,6 +67,7 @@ cli/
 │   ├── errors/             ← CLIError with hints
 │   ├── hooks/              ← Claude Code settings.json merge + tracker
 │   ├── ioutil/             ← Content reading helpers
+│   ├── mcpsetup/           ← MCP URL derivation + Claude/Codex config snippets & TOML merge
 │   ├── oauth/              ← PKCE, device-code grant, keychain
 │   ├── output/             ← Table/JSON/YAML formatters
 │   ├── prompt/             ← Interactive input (huh TUI)
@@ -75,6 +86,43 @@ Credential resolution precedence (in `internal/client/client.go`):
 4. `PROMPTVM_API_KEY` env var (backward-compat)
 5. Active profile (api-key)
 6. Active profile (OAuth with auto-refresh from keychain)
+
+## Onboarding Commands
+
+```bash
+promptvm setup                    # one-shot: auth login (if needed) → sync init →
+                                  # mcp install --target all (undetected clients skipped) →
+                                  # agent skill; --yes / --device / --skip-mcp / --skip-sync
+promptvm setup --print-agent-prompt   # canonical copy-paste block for Claude Code/Codex
+
+promptvm sync init                # zero prompts: workspace ← --workspace → config default →
+                                  # account default; names/slugs normalized to the UUID via
+                                  # GET /api/v1/me/workspaces; ONLY UUIDs are persisted
+                                  # (manifest, credential filename, spool). --interactive opts
+                                  # in to a huh Select. Mints scopes:["capture"]+workspaceId;
+                                  # on a 400 scope-enum rejection falls back to scopes:["write"]
+                                  # with a warning. Flushes the pending spool after storing.
+promptvm sync doctor              # normalize workspace → UUID (manifest rewrite + credential
+                                  # rename), re-mint missing credential, reinstall hooks,
+                                  # flush spool; each check prints ok/fixed/failed
+promptvm sync status              # + manifests consulted (found/absent), credential file path,
+                                  # state-specific "Next:" hint
+
+promptvm mcp install              # claude → `claude mcp add --transport http promptvm <url>`
+                                  # (or .mcp.json fallback); codex → merge [mcp_servers.promptvm]
+                                  # into ~/.codex/config.toml (go-toml/v2; content preserved)
+promptvm mcp print                # per-client snippets (formats mirror the frontend's
+                                  # src/lib/mcp/client-snippets.ts)
+```
+
+MCP endpoint derivation (contract): `dev-api.promptvm.ai → dev-mcp.promptvm.ai`,
+`staging-api → staging-mcp`, `api → mcp`; override with `--mcp-url` /
+`PROMPTVM_MCP_URL` (`internal/mcpsetup`).
+
+`auth login` (all four flows) best-effort stores `defaults.workspace =`
+`/api/v1/me defaultWorkspaceId` when unset and prints a `promptvm setup` hint.
+Claude settings for project/local scope anchor at the **git repo root**
+(`hooks.SettingsFilePathAt`), matching the manifest.
 
 ## Agent Skill Commands
 

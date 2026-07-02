@@ -86,7 +86,7 @@ func runBrowserLogin(cmd *cobra.Command, profileName string) error {
 		return fmt.Errorf("exchanging code: %w", err)
 	}
 
-	return saveOAuthProfile(profileName, baseURL, tokens)
+	return saveOAuthProfile(cmd, profileName, baseURL, tokens)
 }
 
 // buildAuthURL constructs the query-string URL the browser opens to

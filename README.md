@@ -66,6 +66,27 @@ promptvm version
 
 ---
 
+## One-shot setup (`promptvm setup`)
+
+`promptvm setup` runs the entire onboarding in one command: login (if needed),
+Context Sync (`sync init`, non-interactive), MCP registration for detected
+clients (Claude Code / Codex), and the bundled agent skill.
+
+```bash
+promptvm setup                       # interactive login if needed, then everything
+promptvm setup --yes                 # assume defaults (automatic when stdin is not a TTY)
+promptvm setup --device              # headless login (device-code grant)
+promptvm setup --workspace my-team   # UUID, slug, or name — normalized to the UUID
+promptvm setup --skip-mcp            # only Context Sync + skill
+promptvm setup --print-agent-prompt  # print the copy-paste block for Claude Code/Codex
+```
+
+Want an agent to do it? `promptvm setup --print-agent-prompt` emits a canonical
+prompt you can paste into Claude Code or Codex to have it install, authenticate,
+and configure everything, then verify with `promptvm sync status`.
+
+---
+
 ## Authentication
 
 The CLI supports two flows: **browser SSO** (default) and the **legacy API key**. Both persist named profiles at `~/.config/promptvm/profiles/<name>.yaml` with `0600` permissions.
@@ -235,13 +256,23 @@ governance.
 
 ```bash
 # One-time setup for a repo: writes the manifest + the capture hook + a
-# workspace-bound capture credential. Always preview first with --dry-run.
+# workspace-bound capture credential, then flushes any pending spool.
+# Zero prompts by default: the workspace resolves from --workspace → the config
+# default → your account default, and names/slugs are normalized to the
+# workspace UUID. Preview with --dry-run; opt in to a picker with --interactive.
+promptvm sync init
 promptvm sync init --scope project --dry-run
-promptvm sync init --workspace ws_123 --mode summary --yes
+promptvm sync init --workspace my-team --mode summary   # slug/name → UUID
+promptvm sync init --interactive                        # pick from a list
 
-# Inspect the resolved config, target, pending spool, and installed hooks
+# Inspect the resolved config, manifests consulted, credential file, pending
+# spool, installed hooks — plus a state-specific "Next:" hint
 promptvm sync status
 promptvm sync status -o json
+
+# Diagnose + repair: normalize a non-UUID manifest workspace, re-mint a missing
+# capture credential, reinstall missing hooks, flush the spool
+promptvm sync doctor
 
 # Manually capture (no hook needed) or backfill
 promptvm sync push --last
@@ -276,6 +307,24 @@ so a repo can drop `PreCompact`.
   path excludes run client-side; the server runs an authoritative scan too.
 - **Managed settings:** `sync init` aborts and `sync run` no-ops when Claude Code
   managed settings set `disableAllHooks`.
+
+### MCP — connect AI clients to the hosted server
+
+```bash
+# Register the hosted PromptVM MCP server with local clients.
+#   claude → `claude mcp add --transport http promptvm <mcp-url>` (or .mcp.json
+#            when the binary is absent)
+#   codex  → merges [mcp_servers.promptvm] into ~/.codex/config.toml, preserving
+#            existing content; auth headers reuse the active api-key profile or
+#            (OAuth-only) a freshly minted "codex mcp" read/write key
+promptvm mcp install                 # --target claude|codex|all (default all)
+promptvm mcp install --dry-run
+promptvm mcp print                   # print the snippets only; writes nothing
+```
+
+The MCP endpoint derives from the API base URL (`dev-api.promptvm.ai` →
+`dev-mcp.promptvm.ai`; `api.promptvm.ai` → `mcp.promptvm.ai`); override with
+`--mcp-url` or `PROMPTVM_MCP_URL`.
 
 ### `promptvm add` — install a marketplace skill
 
@@ -491,6 +540,7 @@ promptvm prompts list --no-color
 | `PROMPTVM_BASE_URL`    | Override the API base URL (staging, self-host)                   |
 | `PROMPTVM_APP_URL`     | Override the web app URL used by `auth login` (derived otherwise)|
 | `PROMPTVM_HEADLESS`    | Set to `1` to force `auth login` into the device-code flow       |
+| `PROMPTVM_MCP_URL`     | Override the hosted MCP endpoint (derived from the base URL otherwise) |
 | `PROMPTVM_DEVICE_NAME` | Label sent to the server when authorizing a CLI session          |
 | `XDG_CONFIG_HOME`      | Root for `promptvm/` config directory                            |
 | `CODEX_HOME`           | Codex home; its `skills/` dir is the user-scope Codex skill target|
