@@ -39,6 +39,11 @@ type Caller struct {
 	SecretKey   string
 	BearerToken string
 
+	// OrgID is the organization UUID recorded on the profile the bearer
+	// token came from. Sent as X-Org-Id so org-scoped routes (api-keys,
+	// marketplace) can resolve the caller's org, mirroring internal/client.
+	OrgID string
+
 	BaseURL string
 
 	// profile is set when the caller was resolved from the active config
@@ -78,6 +83,7 @@ func NewFromContext(cmd *cobra.Command) (*Caller, error) {
 	} else {
 		c.BearerToken = creds.BearerToken
 		c.APIKey = creds.BearerToken
+		c.OrgID = creds.Organization
 	}
 	return c, nil
 }
@@ -116,6 +122,7 @@ func AnonymousFromContext(cmd *cobra.Command) *Caller {
 		} else if creds.BearerToken != "" {
 			c.BearerToken = creds.BearerToken
 			c.APIKey = creds.BearerToken
+			c.OrgID = creds.Organization
 		}
 	}
 	return c
@@ -204,6 +211,9 @@ func (c *Caller) doStatus(req *http.Request, result interface{}) error {
 		req.Header.Set("X-PromptVM-Secret-Key", c.SecretKey)
 	} else if c.BearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.BearerToken)
+		if c.OrgID != "" {
+			req.Header.Set("X-Org-Id", c.OrgID)
+		}
 	}
 	req.Header.Set("Accept", "application/json")
 
@@ -312,6 +322,9 @@ func (c *Caller) do(req *http.Request, result interface{}) error {
 		// Legacy fallback for tests that construct &Caller{APIKey: …}
 		// directly without setting the explicit fields.
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+	if c.BearerToken != "" && c.OrgID != "" {
+		req.Header.Set("X-Org-Id", c.OrgID)
 	}
 	req.Header.Set("Accept", "application/json")
 
