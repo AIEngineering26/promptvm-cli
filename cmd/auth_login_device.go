@@ -54,5 +54,5 @@ func runDeviceLogin(cmd *cobra.Command, profileName string) error {
 		return err
 	}
 
-	return saveOAuthProfile(profileName, baseURL, tokens)
+	return saveOAuthProfile(cmd, profileName, baseURL, tokens)
 }

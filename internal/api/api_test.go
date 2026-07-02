@@ -176,3 +176,35 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestCaller_BearerSendsOrgIDHeader(t *testing.T) {
+	var gotOrg, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotOrg = r.Header.Get("X-Org-Id")
+		gotAuth = r.Header.Get("Authorization")
+		json.NewEncoder(w).Encode(map[string]string{"ok": "true"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	c := &Caller{BaseURL: srv.URL, BearerToken: "pvcli_tok", OrgID: "org-uuid-1"}
+	var out map[string]string
+	if err := c.Get("/api/v1/api-keys", &out); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if gotAuth != "Bearer pvcli_tok" {
+		t.Errorf("Authorization = %q", gotAuth)
+	}
+	if gotOrg != "org-uuid-1" {
+		t.Errorf("X-Org-Id = %q, want org-uuid-1", gotOrg)
+	}
+
+	// API-key credentials must NOT send X-Org-Id (dual headers carry identity).
+	gotOrg = ""
+	ck := &Caller{BaseURL: srv.URL, PublicKey: "pk_x", SecretKey: "sk_y"}
+	if err := ck.Get("/api/v1/api-keys", &out); err != nil {
+		t.Fatalf("Get(api-key): %v", err)
+	}
+	if gotOrg != "" {
+		t.Errorf("X-Org-Id = %q for api-key caller, want empty", gotOrg)
+	}
+}

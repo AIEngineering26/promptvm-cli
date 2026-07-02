@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -495,5 +496,50 @@ func TestTrackerFilePath(t *testing.T) {
 	_, err = TrackerFilePath(Scope("invalid"))
 	if err == nil {
 		t.Fatal("expected error for invalid scope")
+	}
+}
+
+// TestSettingsFilePathAt_AnchorsAtRoot verifies project/local scopes anchor at
+// the supplied root (the git repo root) rather than the process cwd, and that
+// an empty root falls back to cwd. User scope always ignores the root.
+func TestSettingsFilePathAt_AnchorsAtRoot(t *testing.T) {
+	root := t.TempDir()
+
+	p, err := SettingsFilePathAt(ScopeProject, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, ".claude", "settings.json"); p != want {
+		t.Errorf("project path = %q, want %q", p, want)
+	}
+
+	p, err = SettingsFilePathAt(ScopeLocal, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(root, ".claude", "settings.local.json"); p != want {
+		t.Errorf("local path = %q, want %q", p, want)
+	}
+
+	// User scope ignores the root.
+	up, err := SettingsFilePathAt(ScopeUser, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.HasPrefix(up, root) {
+		t.Errorf("user path %q should not be anchored at root %q", up, root)
+	}
+
+	// Empty root falls back to cwd (same as SettingsFilePath).
+	viaAt, err := SettingsFilePathAt(ScopeProject, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaLegacy, err := SettingsFilePath(ScopeProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viaAt != viaLegacy {
+		t.Errorf("empty root: %q != legacy %q", viaAt, viaLegacy)
 	}
 }

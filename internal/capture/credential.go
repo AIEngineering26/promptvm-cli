@@ -11,6 +11,14 @@ import (
 	"github.com/AIEngineering26/promptvm-cli/internal/config"
 )
 
+// Key scopes recorded in the credential file so `sync doctor` can detect a
+// write-scope fallback credential and swap it for a least-privilege capture
+// key once the backend accepts the capture scope.
+const (
+	ScopeCapture = "capture"
+	ScopeWrite   = "write"
+)
+
 // Credential is the workspace-bound, least-privilege capture key the detached
 // hook uses. It is NEVER the OS keychain (DX-3): a detached background process
 // cannot reliably unlock the keychain, so `sync init` mints this key and stores
@@ -18,6 +26,9 @@ import (
 type Credential struct {
 	PublicKey string
 	SecretKey string
+	// Scope is the minted key's scope ("capture", or "write" for the
+	// broader-than-intended fallback). "" for legacy/manually written files.
+	Scope string
 }
 
 // safeWorkspace bounds a workspace id/slug to filesystem-safe characters so it
@@ -61,6 +72,9 @@ func SaveCredential(workspace string, cred Credential) (string, error) {
 		return "", err
 	}
 	body := fmt.Sprintf("PROMPTVM_PUBLIC_KEY=%s\nPROMPTVM_SECRET_KEY=%s\n", cred.PublicKey, cred.SecretKey)
+	if cred.Scope != "" {
+		body += fmt.Sprintf("PROMPTVM_KEY_SCOPE=%s\n", cred.Scope)
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
 		return "", fmt.Errorf("writing credential: %w", err)
@@ -100,6 +114,8 @@ func LoadCredential(workspace string) (*Credential, error) {
 			cred.PublicKey = strings.TrimSpace(v)
 		case "PROMPTVM_SECRET_KEY":
 			cred.SecretKey = strings.TrimSpace(v)
+		case "PROMPTVM_KEY_SCOPE":
+			cred.Scope = strings.TrimSpace(v)
 		}
 	}
 	if cred.PublicKey == "" || cred.SecretKey == "" {

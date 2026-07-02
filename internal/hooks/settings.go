@@ -21,21 +21,33 @@ const (
 	ScopeLocal Scope = "local"
 )
 
-// SettingsFilePath returns the path to the Claude Code settings.json for the given scope.
+// SettingsFilePath returns the path to the Claude Code settings.json for the
+// given scope, anchoring project/local scopes at the current working directory.
 func SettingsFilePath(scope Scope) (string, error) {
+	return SettingsFilePathAt(scope, "")
+}
+
+// SettingsFilePathAt returns the settings.json path for the given scope,
+// anchoring project/local scopes at root. When root is "" it falls back to the
+// current working directory. Callers that know the git repo root (e.g.
+// `sync init`) MUST pass it so the settings file lands next to the manifest at
+// the repo root rather than wherever the command happened to be invoked from.
+func SettingsFilePathAt(scope Scope, root string) (string, error) {
 	switch scope {
-	case ScopeProject:
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
+	case ScopeProject, ScopeLocal:
+		base := root
+		if base == "" {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return "", err
+			}
+			base = cwd
 		}
-		return filepath.Join(cwd, ".claude", "settings.json"), nil
-	case ScopeLocal:
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
+		name := "settings.json"
+		if scope == ScopeLocal {
+			name = "settings.local.json"
 		}
-		return filepath.Join(cwd, ".claude", "settings.local.json"), nil
+		return filepath.Join(base, ".claude", name), nil
 	case ScopeUser:
 		home, err := os.UserHomeDir()
 		if err != nil {

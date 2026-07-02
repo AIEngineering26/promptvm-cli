@@ -17,8 +17,9 @@ glue work per session.
   promptvm sync init     Set up hooks + manifest + a capture credential for this repo
   promptvm sync run      Hook-invoked uploader (reads the event from stdin, self-detaches)
   promptvm sync status   Show resolved config, target, last sync, pending spool
+  promptvm sync doctor   Diagnose + repair (workspace UUID, credential, hooks, spool)
   promptvm sync push     Manually capture a session now (no hook required)
-  promptvm sync export    Refresh the local context block with promoted captures
+  promptvm sync export   Refresh the local context block with promoted captures
 
 Setup writes a hierarchical manifest (.promptvm/config.json project,
 .promptvm/config.local.json local, or a global default) and a command hook into
@@ -31,6 +32,7 @@ func init() {
 	syncCmd.AddCommand(newSyncInitCmd())
 	syncCmd.AddCommand(newSyncRunCmd())
 	syncCmd.AddCommand(newSyncStatusCmd())
+	syncCmd.AddCommand(newSyncDoctorCmd())
 	syncCmd.AddCommand(newSyncPushCmd())
 	syncCmd.AddCommand(newSyncExportCmd())
 }

@@ -31,7 +31,10 @@ func TestBuildCaptureFragmentShape(t *testing.T) {
 	if !ok || len(group) != 1 {
 		t.Fatalf("SessionEnd group malformed: %v", frag["SessionEnd"])
 	}
-	g := group[0].(map[string]interface{})
+	g, ok := group[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("SessionEnd entry malformed: %v", group[0])
+	}
 	if g["_slug"] != CaptureHookSlug {
 		t.Errorf("_slug = %v, want %s", g["_slug"], CaptureHookSlug)
 	}
@@ -39,7 +42,10 @@ func TestBuildCaptureFragmentShape(t *testing.T) {
 	if !ok || len(handlers) != 1 {
 		t.Fatalf("handlers malformed: %v", g["hooks"])
 	}
-	h := handlers[0].(map[string]interface{})
+	h, ok := handlers[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("handler entry malformed: %v", handlers[0])
+	}
 	if h["type"] != "command" || h["command"] != CaptureHookCommand {
 		t.Errorf("handler = %v", h)
 	}

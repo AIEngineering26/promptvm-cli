@@ -43,6 +43,12 @@ type Entry struct {
 	CreatedAt       time.Time              `json:"createdAt"`
 	Attempts        int                    `json:"attempts"`
 
+	// Reason records why the capture was spooled instead of uploaded (e.g.
+	// "no capture credential stored", "upload failed: …", "manifest had no
+	// workspace; used config default") so `sync status` / `sync doctor` can
+	// explain a growing spool instead of failing silently.
+	Reason string `json:"reason,omitempty"`
+
 	// path is the on-disk file, set on load; not serialized.
 	path string `json:"-"`
 }

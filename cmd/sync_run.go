@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/AIEngineering26/promptvm-cli/internal/capture"
+	"github.com/AIEngineering26/promptvm-cli/internal/config"
 	"github.com/AIEngineering26/promptvm-cli/internal/detach"
 	"github.com/AIEngineering26/promptvm-cli/internal/gitutil"
 	"github.com/AIEngineering26/promptvm-cli/internal/managed"
@@ -132,6 +133,20 @@ func processHook(cmd *cobra.Command, in HookInput, modeOverride, wsOverride stri
 	if wsOverride != "" {
 		workspace = wsOverride
 	}
+	// Manifest resolution can legitimately yield no workspace (e.g. a hook
+	// firing in a repo whose manifest predates init, or a user-scope manifest
+	// that was never written). Fall back to the config default (a UUID stored
+	// by `auth login` / `config set defaults.workspace`) before spooling so
+	// captures don't spool forever against an empty target.
+	wsReason := ""
+	if workspace == "" {
+		if cfg, err := config.Load(); err == nil && cfg.Defaults.Workspace != "" {
+			workspace = cfg.Defaults.Workspace
+			wsReason = "manifest resolved no workspace; used config defaults.workspace"
+		} else {
+			wsReason = "manifest resolved no workspace and no config default is set; run `promptvm sync init`"
+		}
+	}
 
 	// SessionStart is reconcile-only (HOOK-1/HOOK-4), never a capture trigger.
 	if in.HookEventName == "SessionStart" {
@@ -166,7 +181,7 @@ func processHook(cmd *cobra.Command, in HookInput, modeOverride, wsOverride stri
 		return
 	}
 
-	uploadOrSpool(cmd, req)
+	uploadOrSpool(cmd, req, wsReason)
 }
 
 // buildRequest assembles the ingest payload for a single capture. The contractual
@@ -257,24 +272,38 @@ func buildRequest(in HookInput, repoRoot, workspace string, mode capture.Mode, r
 
 // uploadOrSpool attempts an upload via the workspace capture credential and
 // spools on any failure (offline, no credential, server error). On success it
-// records the session in the ledger and clears any matching spool entry.
-func uploadOrSpool(cmd *cobra.Command, req *capture.IngestRequest) {
+// records the session in the ledger and clears any matching spool entry. Every
+// spooled entry records a Reason so `sync status`/`sync doctor` can explain a
+// growing spool. It never blocks or exits non-zero (hook contract).
+func uploadOrSpool(cmd *cobra.Command, req *capture.IngestRequest, extraReason string) {
 	logw := cmd.ErrOrStderr()
 
+	reason := ""
 	caller, err := captureCaller(cmd, req.WorkspaceID)
-	if err == nil && caller != nil {
+	switch {
+	case err != nil:
+		reason = fmt.Sprintf("reading capture credential failed: %v", err)
+		fmt.Fprintf(logw, "sync run: %s, spooling\n", reason)
+	case caller == nil:
+		reason = fmt.Sprintf("no capture credential stored for workspace %s; run `promptvm sync init` or `promptvm sync doctor`", req.WorkspaceID)
+		fmt.Fprintln(logw, "sync run: no capture credential yet, spooling")
+	default:
 		if _, ierr := capture.Ingest(caller, req); ierr == nil {
 			markCaptured(req.ClaudeSessionID)
 			clearSpool(req)
 			return
 		} else {
+			reason = fmt.Sprintf("upload failed: %v", ierr)
 			fmt.Fprintf(logw, "sync run: upload failed, spooling: %v\n", ierr)
 		}
-	} else if caller == nil {
-		fmt.Fprintln(logw, "sync run: no capture credential yet, spooling")
+	}
+	if extraReason != "" {
+		reason = extraReason + "; " + reason
 	}
 
-	if _, serr := spool.Add(spoolEntry(req)); serr != nil {
+	e := spoolEntry(req)
+	e.Reason = reason
+	if _, serr := spool.Add(e); serr != nil {
 		fmt.Fprintf(logw, "sync run: spool failed: %v\n", serr)
 	}
 }
@@ -344,7 +373,7 @@ func reconcileTranscripts(cmd *cobra.Command, repoRoot string, resolved *manifes
 			continue
 		}
 		req.ContentHash = req.ComputeContentHash()
-		uploadOrSpool(cmd, req)
+		uploadOrSpool(cmd, req, "queued by SessionStart reconcile")
 	}
 }
 

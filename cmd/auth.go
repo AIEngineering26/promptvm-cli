@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AIEngineering26/promptvm-cli/internal/api"
 	"github.com/AIEngineering26/promptvm-cli/internal/config"
 	"github.com/AIEngineering26/promptvm-cli/internal/oauth"
 	"github.com/AIEngineering26/promptvm-cli/internal/prompt"
@@ -208,6 +209,7 @@ func runDualKeyLogin(cmd *cobra.Command, publicKey, secretKey, profileName strin
 	fmt.Fprintf(cmd.OutOrStdout(), "\nProfile %q saved to %s/profiles/%s.yaml\n",
 		profileName, dir, profileName)
 	fmt.Fprintf(cmd.OutOrStdout(), "Active profile set to %q.\n", profileName)
+	postLoginSetupHints(cmd)
 	return nil
 }
 
@@ -336,6 +338,7 @@ func runAPIKeyLogin(cmd *cobra.Command, apiKey, profileName string) error {
 	dir, _ := config.Dir()
 	fmt.Printf("\nProfile %q saved to %s/profiles/%s.yaml\n", profileName, dir, profileName)
 	fmt.Printf("Active profile set to %q.\n", profileName)
+	postLoginSetupHints(cmd)
 	return nil
 }
 
@@ -379,9 +382,26 @@ func validateAPIKey(client *sdkclient.Client) (*validationInfo, error) {
 	return &validationInfo{}, nil
 }
 
+// postLoginSetupHints is the shared post-login epilogue for all four login
+// flows (dual-key, legacy api-key, browser PKCE, device grant): best-effort
+// fetch GET /api/v1/me and persist defaults.workspace = defaultWorkspaceId
+// (UUID) when no default is configured yet, then print the next-step hint.
+// It NEVER fails the login — every step degrades silently.
+func postLoginSetupHints(cmd *cobra.Command) {
+	if caller, err := api.NewFromContext(cmd); err == nil {
+		if ws := fetchDefaultWorkspaceID(caller); ws != "" && isUUID(ws) {
+			if cfg, cfgErr := config.Load(); cfgErr == nil && cfg.Defaults.Workspace == "" {
+				cfg.Defaults.Workspace = ws
+				_ = cfg.Save()
+			}
+		}
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "\nNext: run `promptvm setup` to enable Context Sync and connect the MCP server.")
+}
+
 // saveOAuthProfile persists tokens to the keychain and writes an OAuth
 // profile YAML with only metadata (no secrets in the file).
-func saveOAuthProfile(profileName, baseURL string, tokens *oauth.TokenResponse) error {
+func saveOAuthProfile(cmd *cobra.Command, profileName, baseURL string, tokens *oauth.TokenResponse) error {
 	if profileName == "" {
 		profileName = "default"
 	}
@@ -455,6 +475,7 @@ func saveOAuthProfile(profileName, baseURL string, tokens *oauth.TokenResponse) 
 		fmt.Println("✓ Authenticated")
 	}
 	fmt.Printf("Active profile set to %q.\n", profileName)
+	postLoginSetupHints(cmd)
 	return nil
 }
 

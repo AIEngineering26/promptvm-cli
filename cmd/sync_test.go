@@ -31,7 +31,7 @@ func TestSyncCommandRegistered(t *testing.T) {
 		t.Fatal("root command 'sync' is not registered")
 	}
 
-	want := []string{"init", "run", "status", "push", "export"}
+	want := []string{"init", "run", "status", "doctor", "push", "export"}
 	got := map[string]bool{}
 	for _, c := range syncCmd.Commands() {
 		got[c.Name()] = true
@@ -368,13 +368,14 @@ func TestSyncInitWritesManifestHookGitignoreAndCredential(t *testing.T) {
 	t.Setenv("HOME", cfgHome)
 	t.Setenv("XDG_CONFIG_HOME", cfgHome)
 
+	const wsUUID = "0b6f3a1e-8f4d-4c2a-9b7e-2d1c5e6f7a8b"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(r.URL.Path, "/api-keys"):
 			_, _ = w.Write([]byte(`{"publicKey":"pk_cap","secretKey":"sk_cap","scopes":["capture"]}`))
 		case strings.Contains(r.URL.Path, "/me/workspaces"):
-			_, _ = w.Write([]byte(`{"data":[{"id":"ws_default","isDefault":true}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"` + wsUUID + `","name":"Demo","slug":"demo","isDefault":true}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -402,7 +403,7 @@ func TestSyncInitWritesManifestHookGitignoreAndCredential(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
 	_ = cmd.Flags().Set("scope", "local")
-	_ = cmd.Flags().Set("workspace", "ws_demo")
+	_ = cmd.Flags().Set("workspace", "demo") // slug — must normalize to the UUID
 	_ = cmd.Flags().Set("yes", "true")
 	if err := cmd.RunE(cmd, nil); err != nil {
 		t.Fatalf("init RunE: %v\n%s", err, out.String())
@@ -414,8 +415,8 @@ func TestSyncInitWritesManifestHookGitignoreAndCredential(t *testing.T) {
 	if err != nil || m == nil {
 		t.Fatalf("manifest not written: %v", err)
 	}
-	if m.Workspace != "ws_demo" {
-		t.Errorf("manifest workspace = %q", m.Workspace)
+	if m.Workspace != wsUUID {
+		t.Errorf("manifest workspace = %q, want the normalized UUID %q", m.Workspace, wsUUID)
 	}
 
 	// Hook written into .claude/settings.local.json with SessionStart reconcile.
@@ -436,7 +437,7 @@ func TestSyncInitWritesManifestHookGitignoreAndCredential(t *testing.T) {
 	}
 
 	// Capture credential stored.
-	cred, err := capture.LoadCredential("ws_demo")
+	cred, err := capture.LoadCredential(wsUUID)
 	if err != nil || cred == nil || cred.PublicKey != "pk_cap" {
 		t.Errorf("capture credential not stored: %+v err=%v", cred, err)
 	}
@@ -448,7 +449,7 @@ func TestSyncInitWritesManifestHookGitignoreAndCredential(t *testing.T) {
 	cmd2.SetOut(&bytes.Buffer{})
 	cmd2.SetErr(&bytes.Buffer{})
 	_ = cmd2.Flags().Set("scope", "local")
-	_ = cmd2.Flags().Set("workspace", "ws_demo")
+	_ = cmd2.Flags().Set("workspace", wsUUID)
 	_ = cmd2.Flags().Set("yes", "true")
 	if err := cmd2.RunE(cmd2, nil); err != nil {
 		t.Fatalf("second init: %v", err)
