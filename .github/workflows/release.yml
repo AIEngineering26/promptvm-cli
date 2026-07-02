@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*"
+  # Manual re-run/testing hook — goreleaser still requires a tag to publish.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -48,6 +50,8 @@ jobs:
   npm-publish:
     needs: goreleaser
     runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -60,9 +64,12 @@ jobs:
           path: dist
       - name: Stage + verify npm packages (dry-run)
         run: node scripts/build-npm-packages.mjs --version "${GITHUB_REF_NAME}" --dry-run
+      # NOTE: the `secrets` context is not available in `if:` expressions —
+      # referencing it there invalidates the whole workflow file at parse time
+      # (every push then records a 0-job "failure" run). Gate on the repo var
+      # and route the secret through env instead.
       - name: Publish npm packages (gated)
-        if: ${{ vars.PUBLISH_NPM == 'true' && secrets.NPM_TOKEN != '' }}
+        if: ${{ vars.PUBLISH_NPM == 'true' && env.NPM_TOKEN != '' }}
         run: node scripts/build-npm-packages.mjs --version "${GITHUB_REF_NAME}" --publish
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
