@@ -110,14 +110,15 @@ promptvm sync status              # + manifests consulted (found/absent), creden
 
 promptvm mcp install              # claude → `claude mcp add --transport http promptvm <url>`
                                   # (or .mcp.json fallback); codex → merge [mcp_servers.promptvm]
-                                  # into ~/.codex/config.toml (go-toml/v2; content preserved)
+                                  # into ~/.codex/config.toml (textual merge; comments preserved)
 promptvm mcp print                # per-client snippets (formats mirror the frontend's
                                   # src/lib/mcp/client-snippets.ts)
 ```
 
-MCP endpoint derivation (contract): `dev-api.promptvm.ai → dev-mcp.promptvm.ai`,
-`staging-api → staging-mcp`, `api → mcp`; override with `--mcp-url` /
-`PROMPTVM_MCP_URL` (`internal/mcpsetup`).
+MCP endpoint derivation (contract): `dev-api.promptvm.ai → dev-mcp.promptvm.ai/mcp`,
+`staging-api → staging-mcp`, `api → mcp` (the hosted server serves MCP only at
+the `/mcp` path); override with `--mcp-url` / `PROMPTVM_MCP_URL` — full
+endpoint, path included (`internal/mcpsetup`).
 
 `auth login` (all four flows) best-effort stores `defaults.workspace =`
 `/api/v1/me defaultWorkspaceId` when unset and prints a `promptvm setup` hint.

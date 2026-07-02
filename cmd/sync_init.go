@@ -219,7 +219,7 @@ func runSyncInit(cmd *cobra.Command, o syncInitOptions) error {
 	// A freshly stored credential unblocks any captures that spooled while no
 	// credential existed (e.g. OAuth-only logins before this init ran).
 	flushed := 0
-	if credStatus == credStored || credStatus == credStoredFallback {
+	if credCheckmark(credStatus) == "✓" { // any stored/reused credential unblocks the spool
 		flushed, _ = flushSpoolForWorkspace(cmd, workspaceID)
 	}
 
@@ -332,6 +332,8 @@ func withSessionStart(events []string) []string {
 const (
 	credStored         = "stored"
 	credStoredFallback = "stored (write-scope fallback)"
+	credReused         = "stored (existing key reused)"
+	credSwapped        = "stored (write-scope fallback replaced with capture key)"
 	credFailed         = "failed (captures will spool)"
 	credNoKey          = "pending (no key returned)"
 	credNotStored      = "minted (not stored)"
@@ -340,40 +342,75 @@ const (
 // credCheckmark maps a credential status to a checklist glyph.
 func credCheckmark(status string) string {
 	switch status {
-	case credStored, credStoredFallback:
+	case credStored, credStoredFallback, credReused, credSwapped:
 		return "✓"
 	default:
 		return "✗"
 	}
 }
 
-// isScopeEnumRejection reports whether an api-keys mint error is the backend
-// 400 "body/scopes/0 must be equal to one of the allowed values" rejection —
-// i.e. the deployed backend does not (yet) accept the `capture` scope.
+// isScopeEnumRejection reports whether an api-keys mint error is a backend 400
+// scope-enum rejection — i.e. the deployed backend does not (yet) accept the
+// `capture` scope. It matches both known bodies (the legacy Ajv "body/scopes/0
+// must be equal to one of the allowed values" and the newer "Allowed values:"
+// formatter) and deliberately requires the enum wording so that other 400s
+// that merely mention "scopes" take the loud-failure path instead of silently
+// downgrading to an over-broad write key.
 func isScopeEnumRejection(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "api error 400") && strings.Contains(msg, "scopes")
+	return strings.Contains(msg, "api error 400") &&
+		strings.Contains(msg, "scopes") &&
+		strings.Contains(msg, "allowed values")
 }
 
 // mintAndStoreCredential mints a workspace-bound capture key and stores it for
-// the hook. Contract: scopes:["capture"] + workspaceId (UUID). When the
-// backend rejects the capture scope enum (backend fix ships in parallel), it
-// FALLS BACK to a write-scoped key and warns that it is broader than intended.
-// Any other failure prints a loud, actionable error — the manifest + hooks are
-// already written, so captures spool until the credential exists.
+// the hook. Contract: scopes:["capture"] + workspaceId (UUID). A credential
+// already stored for the workspace is REUSED (capture keys never expire, so
+// re-running init/setup must not accumulate live keys) — except a write-scope
+// fallback credential, which is swapped for a least-privilege capture key as
+// soon as the backend accepts the capture scope. When the backend rejects the
+// capture scope enum (backend fix ships in parallel), it FALLS BACK to a
+// write-scoped key and warns that it is broader than intended. Any other
+// failure prints a loud, actionable error — the manifest + hooks are already
+// written, so captures spool until the credential exists.
 func mintAndStoreCredential(cmd *cobra.Command, caller *api.Caller, workspaceID string) string {
+	existing, _ := capture.LoadCredential(workspaceID)
+	if existing != nil && existing.Scope != capture.ScopeWrite {
+		return credReused
+	}
+
 	fallback := false
 	pub, sec, err := mintAPIKey(caller, "context-sync capture ("+workspaceID+")", []string{"capture"}, workspaceID)
+
+	if existing != nil {
+		// A write-scope fallback credential is stored: swap in the freshly
+		// minted least-privilege key, or keep the fallback when the backend
+		// still rejects the capture scope (or the mint failed).
+		if err != nil || pub == "" || sec == "" {
+			return credReused
+		}
+		if _, serr := capture.SaveCredential(workspaceID, capture.Credential{PublicKey: pub, SecretKey: sec, Scope: capture.ScopeCapture}); serr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: minted a capture-scoped key but could not store it: %v\n", serr)
+			return credReused
+		}
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"note: replaced the write-scope fallback credential (public key %s) with a least-privilege capture key.\n"+
+				"      Revoke the old write key: promptvm apikeys list / promptvm apikeys revoke <id>\n", existing.PublicKey)
+		return credSwapped
+	}
+
 	if isScopeEnumRejection(err) {
 		fallback = true
 		fmt.Fprintln(cmd.ErrOrStderr(),
 			"warning: this backend does not accept the `capture` scope yet; minting a `write`-scoped key instead.\n"+
 				"         This credential is BROADER than intended — re-run `promptvm sync doctor` after the backend\n"+
 				"         capture scope ships to swap in a least-privilege key.")
-		pub, sec, err = mintAPIKey(caller, "context-sync capture (fallback write scope)", []string{"write"}, workspaceID)
+		// No workspaceId on the fallback: write keys are not workspace-bound,
+		// and newer backends reject a non-capture mint that carries one.
+		pub, sec, err = mintAPIKey(caller, "context-sync capture (fallback write scope)", []string{"write"}, "")
 	}
 	if err != nil {
 		credPath, _ := capture.CredentialPath(workspaceID)
@@ -398,7 +435,11 @@ func mintAndStoreCredential(cmd *cobra.Command, caller *api.Caller, workspaceID 
 	if pub == "" || sec == "" {
 		return credNoKey
 	}
-	if _, err := capture.SaveCredential(workspaceID, capture.Credential{PublicKey: pub, SecretKey: sec}); err != nil {
+	scope := capture.ScopeCapture
+	if fallback {
+		scope = capture.ScopeWrite
+	}
+	if _, err := capture.SaveCredential(workspaceID, capture.Credential{PublicKey: pub, SecretKey: sec, Scope: scope}); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: minted credential but could not store it: %v\n", err)
 		return credNotStored
 	}

@@ -117,7 +117,13 @@ func normalizeWorkspace(caller *api.Caller, value string) (id, name string, err 
 				return w.ID, w.Name, nil
 			}
 		}
-		return value, "", nil // trust the UUID even when the listing is unavailable
+		if listErr != nil {
+			return value, "", nil // trust the UUID when the listing is unavailable
+		}
+		// The listing succeeded and the UUID is not in it (e.g. a stale
+		// defaults.workspace from another org): fail now with the available
+		// workspaces instead of writing a manifest the backend will reject.
+		return "", "", fmt.Errorf("workspace %q not found in your organization. Available workspaces:\n%s", value, formatWorkspaceList(items))
 	}
 	if listErr != nil {
 		return "", "", fmt.Errorf("workspace %q is not a UUID and the workspace list could not be fetched to resolve it: %w", value, listErr)

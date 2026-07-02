@@ -20,8 +20,9 @@ drive PromptVM through promptvm_* tools:
   promptvm mcp print     Print the per-client config snippets without writing
 
 The MCP endpoint derives from the API base URL (dev-api.promptvm.ai →
-dev-mcp.promptvm.ai, api.promptvm.ai → mcp.promptvm.ai) and can be overridden
-with --mcp-url or PROMPTVM_MCP_URL.`,
+dev-mcp.promptvm.ai/mcp, api.promptvm.ai → mcp.promptvm.ai/mcp — the hosted
+server speaks MCP only at the /mcp path) and can be overridden with --mcp-url
+or PROMPTVM_MCP_URL (pass the full endpoint, path included).`,
 }
 
 func init() {

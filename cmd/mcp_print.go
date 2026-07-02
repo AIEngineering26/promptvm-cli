@@ -46,8 +46,7 @@ func newMCPPrintCmd() *cobra.Command {
 				snippet := mcpsetup.CodexSnippet(endpoint, nil)
 				if pub, sec := activeAPIKeyPair(); pub != "" && sec != "" {
 					snippet = mcpsetup.CodexSnippet(endpoint, map[string]string{
-						"X-PromptVM-Public-Key": pub,
-						"X-PromptVM-Secret-Key": sec,
+						"Authorization": mcpsetup.PkSkAuthorization(pub, sec),
 					})
 				}
 				snippets = append(snippets, mcpSnippet{

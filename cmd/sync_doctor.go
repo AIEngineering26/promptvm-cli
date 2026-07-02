@@ -12,6 +12,7 @@ import (
 	"github.com/AIEngineering26/promptvm-cli/internal/hooks"
 	"github.com/AIEngineering26/promptvm-cli/internal/manifest"
 	"github.com/AIEngineering26/promptvm-cli/internal/output"
+	"github.com/AIEngineering26/promptvm-cli/internal/spool"
 	"github.com/spf13/cobra"
 )
 
@@ -109,18 +110,35 @@ func runSyncDoctor(cmd *cobra.Command) []doctorCheck {
 				add("workspace", "failed", fmt.Sprintf("rewriting manifest: %v", werr))
 			} else {
 				renameCredentialFile(old, id)
+				// Spool entries recorded under the old slug/name would never
+				// find the renamed <uuid>.env credential — rekey them so the
+				// spool check below can actually flush them.
+				rekeyed := rekeySpoolWorkspace(old, id)
 				workspaceID = id
-				add("workspace", "fixed", fmt.Sprintf("normalized %q → %s (%s); manifest rewritten, credential renamed", old, id, name))
+				detail := fmt.Sprintf("normalized %q → %s (%s); manifest rewritten, credential renamed", old, id, name)
+				if rekeyed > 0 {
+					detail += fmt.Sprintf(", %d spooled capture(s) rekeyed", rekeyed)
+				}
+				add("workspace", "fixed", detail)
 			}
 		}
 	} else {
 		add("workspace", "ok", workspaceID)
 	}
 
-	// 3. Credential: re-mint when missing.
+	// 3. Credential: re-mint when missing; swap a write-scope fallback for a
+	// least-privilege capture key once the backend accepts the capture scope.
 	if isUUID(workspaceID) {
 		cred, _ := capture.LoadCredential(workspaceID)
 		switch {
+		case cred != nil && cred.Scope == capture.ScopeWrite && caller != nil:
+			status := mintAndStoreCredential(cmd, caller, workspaceID)
+			if status == credSwapped {
+				add("credential", "fixed", "swapped the write-scope fallback for a capture-scoped key (revoke the old key: promptvm apikeys revoke <id>)")
+			} else {
+				path, _ := capture.CredentialPath(workspaceID)
+				add("credential", "ok", path+" (write-scope fallback still in place — the backend does not accept the capture scope yet)")
+			}
 		case cred != nil:
 			path, _ := capture.CredentialPath(workspaceID)
 			add("credential", "ok", path)
@@ -128,7 +146,7 @@ func runSyncDoctor(cmd *cobra.Command) []doctorCheck {
 			add("credential", "failed", "missing and the CLI is not authenticated to mint one — run `promptvm auth login`")
 		default:
 			status := mintAndStoreCredential(cmd, caller, workspaceID)
-			if status == credStored || status == credStoredFallback {
+			if credCheckmark(status) == "✓" {
 				add("credential", "fixed", "re-minted: "+status)
 			} else {
 				add("credential", "failed", status)
@@ -190,6 +208,35 @@ func renameCredentialFile(oldWorkspace, newWorkspace string) {
 		return
 	}
 	_ = os.Rename(oldPath, newPath)
+}
+
+// rekeySpoolWorkspace rewrites spool entries recorded under an old workspace
+// identifier (a pre-normalization slug/name) so they carry the normalized UUID
+// in both the entry and its payload. Entries overwrite in place (the spool
+// file name keys on session + content hash, and the content hash excludes the
+// workspace). Returns the number of entries rekeyed.
+func rekeySpoolWorkspace(oldWorkspace, newWorkspace string) int {
+	if oldWorkspace == newWorkspace {
+		return 0
+	}
+	entries, err := spool.List()
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if e.WorkspaceID != oldWorkspace {
+			continue
+		}
+		e.WorkspaceID = newWorkspace
+		if e.Payload != nil {
+			e.Payload.WorkspaceID = newWorkspace
+		}
+		if _, err := spool.Add(e); err == nil {
+			n++
+		}
+	}
+	return n
 }
 
 // checkHooks verifies (and repairs) the installed capture hooks against the

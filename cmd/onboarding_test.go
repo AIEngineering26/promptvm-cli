@@ -94,6 +94,13 @@ func TestNormalizeWorkspace(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Errorf("ambiguous error expected: %v", err)
 	}
+
+	// A UUID absent from a successfully fetched listing (e.g. a stale
+	// defaults.workspace from another org) → error, not silent trust.
+	_, _, err = normalizeWorkspace(caller, "11111111-2222-4333-8444-555555555555")
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("unknown UUID should error listing workspaces: %v", err)
+	}
 }
 
 // TestMintFallbackToWriteScope: a backend 400 scope-enum rejection of
@@ -110,8 +117,9 @@ func TestMintFallbackToWriteScope(t *testing.T) {
 			return
 		}
 		var body struct {
-			Name   string   `json:"name"`
-			Scopes []string `json:"scopes"`
+			Name        string   `json:"name"`
+			Scopes      []string `json:"scopes"`
+			WorkspaceID string   `json:"workspaceId"`
 		}
 		dec := decodeJSONBody(t, r, &body)
 		_ = dec
@@ -124,6 +132,11 @@ func TestMintFallbackToWriteScope(t *testing.T) {
 		}
 		if !strings.Contains(body.Name, "fallback write scope") {
 			t.Errorf("fallback key name = %q, want the documented fallback name", body.Name)
+		}
+		// Write keys are not workspace-bound; newer backends 400 a non-capture
+		// mint that carries workspaceId.
+		if body.WorkspaceID != "" {
+			t.Errorf("fallback mint carried workspaceId %q, want none", body.WorkspaceID)
 		}
 		_, _ = w.Write([]byte(`{"publicKey":"pk_fb","secretKey":"sk_fb"}`))
 	}))
@@ -147,6 +160,82 @@ func TestMintFallbackToWriteScope(t *testing.T) {
 	cred, err := capture.LoadCredential(testWsUUID)
 	if err != nil || cred == nil || cred.PublicKey != "pk_fb" {
 		t.Errorf("fallback credential not stored: %+v %v", cred, err)
+	}
+	if cred != nil && cred.Scope != capture.ScopeWrite {
+		t.Errorf("fallback credential scope = %q, want %q (doctor uses it to swap in a capture key later)", cred.Scope, capture.ScopeWrite)
+	}
+}
+
+// TestMintReusesExistingCredential: re-running init/setup must NOT mint a new
+// key when a capture credential is already stored for the workspace.
+func TestMintReusesExistingCredential(t *testing.T) {
+	cfgHome := t.TempDir()
+	t.Setenv("HOME", cfgHome)
+	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+
+	mints := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mints++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"publicKey":"pk_dup","secretKey":"sk_dup"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	if _, err := capture.SaveCredential(testWsUUID, capture.Credential{PublicKey: "pk_keep", SecretKey: "sk_keep", Scope: capture.ScopeCapture}); err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &api.Caller{BaseURL: srv.URL, PublicKey: "pk_t", SecretKey: "sk_t"}
+	cmd := &cobra.Command{}
+	var errBuf bytes.Buffer
+	cmd.SetErr(&errBuf)
+
+	status := mintAndStoreCredential(cmd, caller, testWsUUID)
+	if status != credReused {
+		t.Fatalf("status = %q, want %q", status, credReused)
+	}
+	if mints != 0 {
+		t.Errorf("minted %d key(s), want 0 (existing credential must be reused)", mints)
+	}
+	cred, _ := capture.LoadCredential(testWsUUID)
+	if cred == nil || cred.PublicKey != "pk_keep" {
+		t.Errorf("stored credential replaced: %+v", cred)
+	}
+}
+
+// TestMintSwapsWriteScopeFallback: when a write-scope fallback credential is
+// stored and the backend now accepts the capture scope, init/doctor swap in a
+// least-privilege capture key.
+func TestMintSwapsWriteScopeFallback(t *testing.T) {
+	cfgHome := t.TempDir()
+	t.Setenv("HOME", cfgHome)
+	t.Setenv("XDG_CONFIG_HOME", cfgHome)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"publicKey":"pk_cap","secretKey":"sk_cap"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	if _, err := capture.SaveCredential(testWsUUID, capture.Credential{PublicKey: "pk_old", SecretKey: "sk_old", Scope: capture.ScopeWrite}); err != nil {
+		t.Fatal(err)
+	}
+
+	caller := &api.Caller{BaseURL: srv.URL, PublicKey: "pk_t", SecretKey: "sk_t"}
+	cmd := &cobra.Command{}
+	var errBuf bytes.Buffer
+	cmd.SetErr(&errBuf)
+
+	status := mintAndStoreCredential(cmd, caller, testWsUUID)
+	if status != credSwapped {
+		t.Fatalf("status = %q, want %q (stderr: %s)", status, credSwapped, errBuf.String())
+	}
+	cred, _ := capture.LoadCredential(testWsUUID)
+	if cred == nil || cred.PublicKey != "pk_cap" || cred.Scope != capture.ScopeCapture {
+		t.Errorf("capture credential not swapped in: %+v", cred)
+	}
+	if !strings.Contains(errBuf.String(), "pk_old") || !strings.Contains(errBuf.String(), "revoke") {
+		t.Errorf("expected a revoke-the-old-key note naming pk_old, got: %s", errBuf.String())
 	}
 }
 
@@ -335,6 +424,7 @@ func TestSyncDoctorNormalizesWorkspaceAndRenamesCredential(t *testing.T) {
 	t.Setenv("HOME", cfgHome)
 	t.Setenv("XDG_CONFIG_HOME", cfgHome)
 
+	var ingested []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -342,6 +432,11 @@ func TestSyncDoctorNormalizesWorkspaceAndRenamesCredential(t *testing.T) {
 			_, _ = w.Write([]byte(`{"data":[{"id":"` + testWsUUID + `","name":"Demo","slug":"demo","isDefault":true}]}`))
 		case strings.HasSuffix(r.URL.Path, "/api-keys"):
 			_, _ = w.Write([]byte(`{"publicKey":"pk_new","secretKey":"sk_new"}`))
+		case strings.HasSuffix(r.URL.Path, "/contexts/sessions"):
+			var req capture.IngestRequest
+			decodeJSONBody(t, r, &req)
+			ingested = append(ingested, req.WorkspaceID)
+			_, _ = w.Write([]byte(`{"status":"accepted","captureId":"cap-1"}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -357,6 +452,27 @@ func TestSyncDoctorNormalizesWorkspaceAndRenamesCredential(t *testing.T) {
 
 	// A credential stored under the slug name must be renamed to the UUID.
 	if _, err := capture.SaveCredential("demo", capture.Credential{PublicKey: "pk_old", SecretKey: "sk_old"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A capture spooled while the manifest still held the slug must be rekeyed
+	// to the UUID during normalization — otherwise it can never flush (its
+	// credential file was just renamed to <uuid>.env).
+	payload := &capture.IngestRequest{
+		WorkspaceID:     "demo",
+		ClaudeSessionID: "sess-legacy",
+		Source:          "claude-code",
+		CaptureMode:     capture.Mode("summary"),
+		Summary:         "legacy spooled capture",
+	}
+	payload.ContentHash = payload.ComputeContentHash()
+	if _, err := spool.Add(&spool.Entry{
+		ClaudeSessionID: "sess-legacy",
+		WorkspaceID:     "demo",
+		CaptureMode:     payload.CaptureMode,
+		ContentHash:     payload.ContentHash,
+		Payload:         payload,
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -386,6 +502,13 @@ func TestSyncDoctorNormalizesWorkspaceAndRenamesCredential(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "fixed") {
 		t.Errorf("doctor output missing a fixed check:\n%s", out.String())
+	}
+	// The spooled capture was rekeyed to the UUID and flushed.
+	if len(ingested) != 1 || ingested[0] != testWsUUID {
+		t.Errorf("spooled capture not rekeyed+flushed under the UUID: ingested=%v", ingested)
+	}
+	if entries, _ := spool.List(); len(entries) != 0 {
+		t.Errorf("spool not empty after doctor: %d entries remain", len(entries))
 	}
 }
 
@@ -455,10 +578,10 @@ func TestMCPPrintSnippets(t *testing.T) {
 		t.Fatalf("RunE: %v", err)
 	}
 	s := out.String()
-	if !strings.Contains(s, "claude mcp add --transport http promptvm https://dev-mcp.promptvm.ai") {
+	if !strings.Contains(s, "claude mcp add --transport http promptvm https://dev-mcp.promptvm.ai/mcp") {
 		t.Errorf("claude snippet missing/wrong:\n%s", s)
 	}
-	if !strings.Contains(s, "[mcp_servers.promptvm]") || !strings.Contains(s, `url = "https://dev-mcp.promptvm.ai"`) {
+	if !strings.Contains(s, "[mcp_servers.promptvm]") || !strings.Contains(s, `url = "https://dev-mcp.promptvm.ai/mcp"`) {
 		t.Errorf("codex snippet missing/wrong:\n%s", s)
 	}
 }

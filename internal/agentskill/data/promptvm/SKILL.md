@@ -163,8 +163,9 @@ promptvm mcp print [--target claude|codex|all]
                                          # print the copy-paste config snippets only
 ```
 The MCP endpoint derives from the API base URL (dev-api.promptvm.ai →
-dev-mcp.promptvm.ai; api.promptvm.ai → mcp.promptvm.ai); override with
-`--mcp-url` or `PROMPTVM_MCP_URL`.
+dev-mcp.promptvm.ai/mcp; api.promptvm.ai → mcp.promptvm.ai/mcp — the hosted
+server speaks MCP only at the /mcp path); override with `--mcp-url` or
+`PROMPTVM_MCP_URL` (full endpoint, path included).
 
 ## Using the hosted MCP server
 

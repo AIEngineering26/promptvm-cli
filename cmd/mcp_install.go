@@ -46,9 +46,11 @@ func newMCPInstallCmd() *cobra.Command {
             claude binary is on PATH; otherwise writes the server into the
             project's .mcp.json
   codex   → merges [mcp_servers.promptvm] into ~/.codex/config.toml (created if
-            absent, existing content preserved). Auth headers reuse the active
-            api-key profile's pk/sk pair; an OAuth-only login mints a
-            scopes:["read","write"] key named "codex mcp" for the headers.
+            absent, existing content preserved). The Authorization header packs
+            the active api-key profile's pk/sk pair as the MCP bearer
+            ("Bearer pvm_mcp_pkv1_…"); a credential already in the config is
+            reused, and an OAuth-only login mints a scopes:["read","write"]
+            key named "codex mcp" for it.
 
 Use --dry-run to preview and ` + "`promptvm mcp print`" + ` to get copy-paste snippets.`,
 		Args: cobra.NoArgs,
@@ -133,7 +135,7 @@ func installMCPClaude(cmd *cobra.Command, o mcpInstallOptions, endpoint string) 
 	}
 
 	if lookErr == nil {
-		args := mcpsetup.ClaudeAddCommand(endpoint, o.Scope == "user")
+		args := mcpsetup.ClaudeAddCommand(endpoint, o.Scope)
 		if o.DryRun {
 			res.Status = "dry-run"
 			res.Detail = "would run: claude " + strings.Join(args, " ")
@@ -237,15 +239,16 @@ func installMCPCodex(cmd *cobra.Command, o mcpInstallOptions, endpoint string) m
 		}
 	}
 	path := filepath.Join(dir, "config.toml")
+	existing, _ := os.ReadFile(path)
 
-	headers, headerNote, ok := codexAuthHeaders(cmd, endpoint)
+	headers, headerNote, ok := codexAuthHeaders(cmd, existing)
 	if !ok {
 		// Could not obtain credentials for the headers: print the manual
 		// snippet instead of writing a config that cannot authenticate.
 		res.Status = "failed"
 		res.Detail = "could not obtain credentials for the Codex MCP headers; add this to " + path + " manually:\n\n" +
 			mcpsetup.CodexSnippet(endpoint, map[string]string{
-				"X-PromptVM-Public-Key": "<pk_…>", "X-PromptVM-Secret-Key": "<sk_…>",
+				"Authorization": "Bearer " + mcpsetup.PKSKBearerPrefix + "<base64url(pk_…:sk_…)>",
 			}) + "\n"
 		return res
 	}
@@ -256,7 +259,6 @@ func installMCPCodex(cmd *cobra.Command, o mcpInstallOptions, endpoint string) m
 		return res
 	}
 
-	existing, _ := os.ReadFile(path)
 	merged, err := mcpsetup.MergeCodexConfig(existing, endpoint, headers)
 	if err != nil {
 		res.Status = "failed"
@@ -285,15 +287,25 @@ func installMCPCodex(cmd *cobra.Command, o mcpInstallOptions, endpoint string) m
 	return res
 }
 
-// codexAuthHeaders builds the auth headers for the Codex MCP registration:
-// the active api-key profile's pk/sk pair, or (for OAuth-only logins) a
-// freshly minted scopes:["read","write"] key named "codex mcp".
-func codexAuthHeaders(cmd *cobra.Command, endpoint string) (headers map[string]string, note string, ok bool) {
+// codexAuthHeaders builds the auth header for the Codex MCP registration. The
+// hosted MCP server authenticates ONLY the `Authorization` header, using the
+// direct pk/sk bearer envelope ("Bearer pvm_mcp_pkv1_<base64url(pk:sk)>") — it
+// never reads X-PromptVM-* headers on /mcp. Sources, in order: the active
+// api-key profile's pk/sk pair; an Authorization header already present in the
+// existing config.toml (so re-runs never mint duplicate keys); or (for
+// OAuth-only logins) a freshly minted scopes:["read","write"] key named
+// "codex mcp".
+func codexAuthHeaders(cmd *cobra.Command, existing []byte) (headers map[string]string, note string, ok bool) {
 	if pub, sec := activeAPIKeyPair(); pub != "" && sec != "" {
 		return map[string]string{
-			"X-PromptVM-Public-Key": pub,
-			"X-PromptVM-Secret-Key": sec,
+			"Authorization": mcpsetup.PkSkAuthorization(pub, sec),
 		}, " (auth: active api-key profile)", true
+	}
+
+	if auth := mcpsetup.ExistingCodexAuthorization(existing); auth != "" {
+		return map[string]string{
+			"Authorization": auth,
+		}, " (auth: existing config credential reused)", true
 	}
 
 	caller, err := api.NewFromContext(cmd)
@@ -307,7 +319,6 @@ func codexAuthHeaders(cmd *cobra.Command, endpoint string) (headers map[string]s
 	fmt.Fprintln(cmd.ErrOrStderr(),
 		"note: your login is OAuth-only, so a new API key named \"codex mcp\" (scopes: read, write) was minted for the Codex MCP headers.")
 	return map[string]string{
-		"X-PromptVM-Public-Key": pub,
-		"X-PromptVM-Secret-Key": sec,
+		"Authorization": mcpsetup.PkSkAuthorization(pub, sec),
 	}, " (auth: minted \"codex mcp\" key)", true
 }

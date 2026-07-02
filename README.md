@@ -315,16 +315,19 @@ so a repo can drop `PreCompact`.
 #   claude → `claude mcp add --transport http promptvm <mcp-url>` (or .mcp.json
 #            when the binary is absent)
 #   codex  → merges [mcp_servers.promptvm] into ~/.codex/config.toml, preserving
-#            existing content; auth headers reuse the active api-key profile or
-#            (OAuth-only) a freshly minted "codex mcp" read/write key
+#            existing content (comments included); the Authorization header packs
+#            pk/sk as the MCP bearer ("Bearer pvm_mcp_pkv1_…") from the active
+#            api-key profile, an existing config entry, or (OAuth-only) a freshly
+#            minted "codex mcp" read/write key
 promptvm mcp install                 # --target claude|codex|all (default all)
 promptvm mcp install --dry-run
 promptvm mcp print                   # print the snippets only; writes nothing
 ```
 
 The MCP endpoint derives from the API base URL (`dev-api.promptvm.ai` →
-`dev-mcp.promptvm.ai`; `api.promptvm.ai` → `mcp.promptvm.ai`); override with
-`--mcp-url` or `PROMPTVM_MCP_URL`.
+`dev-mcp.promptvm.ai/mcp`; `api.promptvm.ai` → `mcp.promptvm.ai/mcp` — the
+hosted server speaks MCP only at the `/mcp` path); override with `--mcp-url`
+or `PROMPTVM_MCP_URL` (pass the full endpoint, path included).
 
 ### `promptvm add` — install a marketplace skill
 
