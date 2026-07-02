@@ -78,7 +78,7 @@ Use --dry-run to preview the exact file changes.`,
 func runSyncInit(cmd *cobra.Command, o syncInitOptions) error {
 	// SEC-6: honor OS managed settings — never install hooks an admin disabled.
 	if pol, err := managed.Detect(); err == nil && pol.Present && pol.DisableAllHooks {
-		return fmt.Errorf("Claude Code managed settings (%s) set disableAllHooks; "+
+		return fmt.Errorf("managed Claude Code settings (%s) set disableAllHooks; "+
 			"context-sync hooks cannot be installed on this machine", pol.Path)
 	}
 

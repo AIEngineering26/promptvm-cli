@@ -73,9 +73,10 @@ func printMCPInstallResults(cmd *cobra.Command, results []mcpInstallResult) erro
 	return output.Print(cmd, results, func(w io.Writer) error {
 		for _, r := range results {
 			glyph := "✓"
-			if r.Status == "failed" {
+			switch r.Status {
+			case "failed":
 				glyph = "✗"
-			} else if r.Status == "skipped" {
+			case "skipped":
 				glyph = "-"
 			}
 			fmt.Fprintf(w, "%s %s: %s — %s\n", glyph, r.Target, r.Status, r.Detail)

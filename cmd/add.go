@@ -102,7 +102,7 @@ func newAddCmd() *cobra.Command {
 					return decideErr
 				}
 				if !ok {
-					return errors.New("Installation cancelled.")
+					return errors.New("Installation cancelled.") //nolint:staticcheck // PRD-mandated user-facing message
 				}
 				// Overwrite: clear the existing folder so stale files don't
 				// linger from a previous version.
@@ -222,7 +222,7 @@ func decideOverwrite(cmd *cobra.Command, slug string, force bool) (bool, error) 
 		return true, nil
 	}
 	if !isTTYFunc() {
-		return false, fmt.Errorf("Skill %q already exists. Pass --force to overwrite.", slug)
+		return false, fmt.Errorf("Skill %q already exists. Pass --force to overwrite.", slug) //nolint:staticcheck // PRD-mandated user-facing message
 	}
 	ok, err := confirmOverwriteFunc(fmt.Sprintf("Overwrite existing skill '%s'? (y/N)", slug))
 	if err != nil {
@@ -242,17 +242,17 @@ func mapResolveError(err error, ref string) error {
 	if errors.As(err, &se) {
 		// 404 (not public / missing) and any other HTTP-level rejection map
 		// to "not found" — the slug is the user's only handle on the skill.
-		return fmt.Errorf("Skill %q not found on the marketplace", ref)
+		return fmt.Errorf("Skill %q not found on the marketplace", ref) //nolint:staticcheck // PRD-mandated user-facing message
 	}
 	// Any transport error (DNS, refused connection, context deadline) maps to
 	// the connectivity message.
-	return errors.New("Could not reach the marketplace — check your connection.")
+	return errors.New("Could not reach the marketplace — check your connection.") //nolint:staticcheck // PRD-mandated user-facing message
 }
 
 // mapWriteError translates a filesystem failure during reconstruction into the
 // "Cannot write to <path>: <reason>" form.
 func mapWriteError(err error, target string) error {
-	return fmt.Errorf("Cannot write to %s: %s", target, err)
+	return fmt.Errorf("Cannot write to %s: %s", target, err) //nolint:staticcheck // PRD-mandated user-facing message
 }
 
 // fireInstallCounter best-effort increments the public install counter. Any

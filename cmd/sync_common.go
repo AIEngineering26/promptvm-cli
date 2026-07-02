@@ -14,10 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// validSyncScopes is the single scope vocabulary used across the manifest and
-// the settings writer (DX-4).
-var validSyncScopes = []string{"local", "project", "user"}
-
 // scopeToManifest maps the user-facing scope to a manifest.Scope.
 func scopeToManifest(scope string) (manifest.Scope, error) {
 	switch scope {
