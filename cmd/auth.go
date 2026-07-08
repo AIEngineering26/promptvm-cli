@@ -252,7 +252,7 @@ func runAPIKeyLogin(cmd *cobra.Command, apiKey, profileName string) error {
 	}
 
 	if baseURL == "" {
-		baseURL = "https://dev-api.promptvm.ai"
+		baseURL = "https://api.promptvm.ai"
 	}
 
 	fmt.Print("Validating key... ")
@@ -488,7 +488,7 @@ func resolveLoginBaseURL(cmd *cobra.Command) string {
 	if v := os.Getenv("PROMPTVM_BASE_URL"); v != "" {
 		return v
 	}
-	return "https://dev-api.promptvm.ai"
+	return "https://api.promptvm.ai"
 }
 
 // resolveAppURL returns the web app base URL by checking the --app-url
@@ -504,7 +504,7 @@ func resolveAppURL(cmd *cobra.Command, apiBaseURL string) string {
 	if derived := deriveAppURL(apiBaseURL); derived != "" {
 		return derived
 	}
-	return "https://dev-app.promptvm.ai"
+	return "https://app.promptvm.ai"
 }
 
 // deriveAppURL swaps "api" for "app" in the host label of known
