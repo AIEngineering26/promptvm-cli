@@ -56,7 +56,7 @@ func resolveFlagOrProfileBaseURL(cmd *cobra.Command) string {
 			return p.BaseURL
 		}
 	}
-	return "https://dev-api.promptvm.ai"
+	return "https://api.promptvm.ai"
 }
 
 // activeAPIKeyPair returns the active profile's pk/sk pair when it is an
