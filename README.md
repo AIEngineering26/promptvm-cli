@@ -8,25 +8,27 @@ The official command-line interface for the [PromptVM](https://promptvm.com) pla
 
 ## Quick start
 
-Install a marketplace skill into your local Claude Code skills directory — no
-login, no workspace:
+Install marketplace content — skills, agents, commands, prompts, hooks, MCP
+servers, or settings — with a single command. No login, no workspace required:
 
 ```bash
-npx @promptvm/cli add pdf
+npx @promptvm/cli add claude-code-templates/frontend-design
 # or, with a native install:
-promptvm add image-prompt-architect
+promptvm add claude-code-templates/frontend-design
 ```
 
-This writes `SKILL.md` + every bundled file into `~/.claude/skills/<slug>/`.
-See [`promptvm add`](#promptvm-add--install-a-marketplace-skill).
+The `creator/name` form is the canonical install identifier: human-readable,
+memorable, and provenance-bearing. Bare slugs (`pdf-toolkit`) and legacy
+`name-<id8>` refs are still accepted for backward compatibility.
+See [`promptvm add`](#promptvm-add--install-marketplace-content).
 
 ## Installation
 
 ### npm / npx (no native install)
 
 ```bash
-npx @promptvm/cli add <slug>        # one-off, no global install
-npm install -g promptvm        # or install the launcher globally
+npx @promptvm/cli add <creator/name>   # one-off, no global install
+npm install -g @promptvm/cli           # or install the launcher globally
 ```
 
 The `promptvm` npm package is a thin launcher: it resolves the matching
@@ -329,25 +331,41 @@ The MCP endpoint derives from the API base URL (`dev-api.promptvm.ai` →
 hosted server speaks MCP only at the `/mcp` path); override with `--mcp-url`
 or `PROMPTVM_MCP_URL` (pass the full endpoint, path included).
 
-### `promptvm add` — install a marketplace skill
+### `promptvm add` — install marketplace content
 
-`add` is the one-command path for installing a **public marketplace skill** into
-your local Claude Code skills directory. It resolves the skill by slug
-**anonymously** (no `auth login`, no workspace) and writes `SKILL.md` plus every
-bundled file into `~/.claude/skills/<slug>/`.
+`add` installs any public marketplace content kind **anonymously** (no
+`auth login`, no workspace). The canonical install identifier is
+`creator/name` — e.g. `claude-code-templates/frontend-design`. Bare slugs
+(`pdf-toolkit`) and legacy `name-<id8>` refs resolve for backward
+compatibility.
 
 ```bash
-promptvm add pdf-toolkit                 # → ~/.claude/skills/pdf-toolkit/
-promptvm add acme/pdf-toolkit            # disambiguate by creator/slug
-promptvm add pdf-toolkit --dry-run       # list files that would be written; writes nothing
-promptvm add pdf-toolkit --force         # overwrite an existing install without prompting
-promptvm add pdf-toolkit --scope project # write to ./.claude/skills/ instead of ~/.claude/skills/
+# Canonical form (recommended)
+promptvm add claude-code-templates/frontend-design
+
+# Flags
+promptvm add claude-code-templates/pdf-toolkit --dry-run       # preview what would be written; writes nothing
+promptvm add claude-code-templates/pdf-toolkit --force         # overwrite an existing install without prompting
+promptvm add claude-code-templates/pdf-toolkit --scope project # write to ./.claude/… instead of ~/.claude/…
+promptvm add promptvm/pdf-toolkit --stdout                     # print prompt content to stdout (prompt kind only)
 ```
 
-- **Default scope is user-global** (`~/.claude/skills/`) — a skill teaches an
-  agent globally.
+**Where content lands by kind:**
+
+| Kind       | Target path                               |
+|------------|-------------------------------------------|
+| `skill`    | `<scope>/.claude/skills/<name>/SKILL.md`  |
+| `agent`    | `<scope>/.claude/agents/<name>.md`        |
+| `command`  | `<scope>/.claude/commands/<name>.md`      |
+| `prompt`   | `<scope>/.claude/prompts/<name>.md` (or `--stdout`) |
+| `hook`     | merged into `<scope>/.claude/settings.json` |
+| `settings` | deep-merged into `<scope>/.claude/settings.json` |
+| `mcp`      | merged into `.mcp.json`                   |
+
+- **Default scope is user-global** (`~/.claude/…`). Use `--scope project` to
+  install into the current repo's `.claude/` instead.
 - **Collision:** if the target already exists, `add` prompts `Overwrite existing
-  skill '<slug>'? (y/N)`. `--force` overwrites; in a non-interactive shell
+  <kind> '<name>'? (y/N)`. `--force` overwrites; in a non-interactive shell
   (no TTY) without `--force` it aborts with a `--force` hint.
 - **Best-effort install counter:** on success `add` pings a public install
   counter; a counter failure never fails the install (and `--dry-run` never
