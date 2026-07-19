@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AIEngineering26/promptvm-cli/internal/api"
 	"github.com/AIEngineering26/promptvm-cli/internal/prompt"
 	"github.com/spf13/cobra"
 )
@@ -121,6 +123,17 @@ func fakeServer(t *testing.T, fixtures map[string]resolveFixture) (*httptest.Ser
 		if fx.kind == "__ambiguous__" {
 			w.WriteHeader(http.StatusConflict)
 			_, _ = w.Write([]byte(`{"error":"AMBIGUOUS_REF","ref":"` + ref + `","candidates":["acme/pdf","promptvm/pdf"]}`))
+			return
+		}
+		// __5xx__:NNN — simulate a gateway error with the given status code.
+		// The name field encodes the desired status as a string (e.g. "503").
+		if fx.kind == "__5xx__" {
+			var code int
+			if _, err := fmt.Sscanf(fx.name, "%d", &code); err != nil {
+				code = 503
+			}
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(`{"error":"SERVICE_UNAVAILABLE"}`))
 			return
 		}
 		// Rewrite skill/agent file downloadUrls to point back at this server.
@@ -563,5 +576,248 @@ func TestAddUnsupportedKind(t *testing.T) {
 	_, err := runAdd(t, srv, t.TempDir(), "weird")
 	if err == nil || !strings.Contains(err.Error(), "Unsupported content kind") {
 		t.Errorf("want unsupported-kind error, got %v", err)
+	}
+}
+
+// ─── P1 #4: status-code → error message mapping ──────────────────────────────
+
+// TestMapResolveError_StatusMapping verifies that each HTTP status code maps to
+// the correct user-facing message, with no status collapsing all errors to
+// "not found" (the pre-fix behaviour).
+func TestMapResolveError_StatusMapping(t *testing.T) {
+	cases := []struct {
+		status    int
+		wantSubst string
+	}{
+		{404, "not found on the marketplace"},
+		{409, "is ambiguous"},
+		{500, "temporarily unavailable"},
+		{502, "temporarily unavailable"},
+		{503, "temporarily unavailable"},
+		{504, "temporarily unavailable"},
+		{401, "unexpected marketplace error (HTTP 401)"},
+		{403, "unexpected marketplace error (HTTP 403)"},
+		{429, "unexpected marketplace error (HTTP 429)"},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("HTTP%d", tc.status), func(t *testing.T) {
+			body := `{"error":"TEST"}`
+			if tc.status == 409 {
+				// bare 409 without AMBIGUOUS_REF body → generic ambiguous message
+				body = `{"error":"CONFLICT"}`
+			}
+			se := &api.StatusError{StatusCode: tc.status, Body: body}
+			got := mapResolveError(se, "some/ref")
+			if !strings.Contains(got.Error(), tc.wantSubst) {
+				t.Errorf("status %d: got %q, want substring %q", tc.status, got.Error(), tc.wantSubst)
+			}
+		})
+	}
+}
+
+// TestMapResolveError_TransportError verifies that a non-StatusError (DNS
+// failure, timeout) maps to the "check your connection" message.
+func TestMapResolveError_TransportError(t *testing.T) {
+	err := fmt.Errorf("dial tcp: connection refused")
+	got := mapResolveError(err, "foo")
+	if !strings.Contains(got.Error(), "check your connection") {
+		t.Errorf("transport error: got %q, want connection message", got.Error())
+	}
+}
+
+// TestIsRetryableResolveError verifies which status codes trigger the automatic
+// retry and which do not.
+func TestIsRetryableResolveError(t *testing.T) {
+	cases := []struct {
+		status    int
+		wantRetry bool
+	}{
+		{200, false},
+		{400, false},
+		{401, false},
+		{403, false},
+		{404, false},
+		{409, false},
+		{500, false}, // 500 = server bug, not a transient gateway error
+		{502, true},
+		{503, true},
+		{504, true},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("HTTP%d", tc.status), func(t *testing.T) {
+			err := &api.StatusError{StatusCode: tc.status}
+			got := isRetryableResolveError(err)
+			if got != tc.wantRetry {
+				t.Errorf("status %d: retryable = %v, want %v", tc.status, got, tc.wantRetry)
+			}
+		})
+	}
+}
+
+// TestAdd5xxTemporarilyUnavailable is an integration test confirming that a 503
+// from the resolve endpoint produces the "temporarily unavailable" error message
+// (after the automatic retry). The retry backoff is skipped via a 0-delay server
+// that stays at 503 for both attempts.
+func TestAdd5xxTemporarilyUnavailable(t *testing.T) {
+	fixtures := map[string]resolveFixture{
+		"my-pkg": {kind: "__5xx__", name: "503"},
+	}
+	srv, _ := fakeServer(t, fixtures)
+	_, err := runAdd(t, srv, t.TempDir(), "my-pkg")
+	if err == nil {
+		t.Fatal("expected error for 503")
+	}
+	if !strings.Contains(err.Error(), "temporarily unavailable") {
+		t.Errorf("5xx resolve: got %q, want 'temporarily unavailable'", err.Error())
+	}
+}
+
+// ─── P2 #12: TTY detection (isTTYFunc indirection) ───────────────────────────
+
+// TestIsTTYFuncNonTTYTakesNonInteractiveBranch verifies that when isTTYFunc
+// returns false the overwrite prompt is bypassed and the error message tells the
+// user to pass --force. This exercises the non-TTY code path that previously
+// crashed when stdin=/dev/null (a char device that is NOT a real terminal).
+func TestIsTTYFuncNonTTYTakesNonInteractiveBranch(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"my-agent": {kind: "agent", name: "my-agent", content: map[string]interface{}{
+			"raw_agent_md": "---\nname: my-agent\n---\nbody",
+			"body":         "body",
+			"files":        []map[string]interface{}{},
+		}},
+	}
+	srv, _ := fakeServer(t, fixtures)
+	// Pre-create the target so a collision is triggered.
+	_ = os.MkdirAll(filepath.Join(dir, "agents"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "agents", "my-agent.md"), []byte("old"), 0o644)
+
+	// Simulate /dev/null-style non-TTY stdin (the fixed behaviour).
+	orig := isTTYFunc
+	isTTYFunc = func() bool { return false }
+	defer func() { isTTYFunc = orig }()
+
+	_, err := runAdd(t, srv, dir, "my-agent")
+	if err == nil || !strings.Contains(err.Error(), "Pass --force to overwrite") {
+		t.Errorf("non-TTY collision: want --force hint, got %v", err)
+	}
+}
+
+// TestIsTTYFuncTTYShowsInteractivePrompt verifies that when isTTYFunc returns
+// true the confirmOverwriteFunc is called (interactive branch), and that
+// confirming proceeds to overwrite while denying cancels.
+func TestIsTTYFuncTTYInteractiveDeny(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"my-agent": {kind: "agent", name: "my-agent", content: map[string]interface{}{
+			"raw_agent_md": "body",
+			"body":         "body",
+			"files":        []map[string]interface{}{},
+		}},
+	}
+	srv, _ := fakeServer(t, fixtures)
+	_ = os.MkdirAll(filepath.Join(dir, "agents"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "agents", "my-agent.md"), []byte("old"), 0o644)
+
+	origTTY := isTTYFunc
+	origConfirm := confirmOverwriteFunc
+	promptCalled := false
+	isTTYFunc = func() bool { return true }
+	confirmOverwriteFunc = func(string) (bool, error) { promptCalled = true; return false, nil }
+	defer func() { isTTYFunc = origTTY; confirmOverwriteFunc = origConfirm }()
+
+	_, err := runAdd(t, srv, dir, "my-agent")
+	if !promptCalled {
+		t.Error("interactive TTY: confirmOverwriteFunc should have been called")
+	}
+	if err == nil || err.Error() != "Installation cancelled." {
+		t.Errorf("interactive deny: want 'Installation cancelled.', got %v", err)
+	}
+}
+
+// ─── P3 #19: deepMergeSettings identical-value no-noise ──────────────────────
+
+// TestDeepMergeSettings_IdenticalValueNoConflict verifies that a re-install of
+// a settings package whose keys are already at exactly the same value produces
+// no "skipped" entries (false conflict noise). This was the pre-fix behaviour.
+func TestDeepMergeSettings_IdenticalValueNoConflict(t *testing.T) {
+	dst := map[string]interface{}{
+		"model": "claude-opus-4",
+		"env":   map[string]interface{}{"TRACE": "1", "KEEP": "yes"},
+	}
+	src := map[string]interface{}{
+		"model": "claude-opus-4",               // identical scalar → no conflict
+		"env":   map[string]interface{}{"TRACE": "1"}, // identical nested scalar → no conflict
+	}
+	_, skipped := deepMergeSettings(dst, src, false)
+	if len(skipped) != 0 {
+		t.Errorf("identical values should produce zero skipped entries, got %v", skipped)
+	}
+}
+
+// TestDeepMergeSettings_DifferentValueReportsConflict verifies that a key
+// whose incoming value DIFFERS from the existing value is reported in skipped
+// (and preserved) when --force is not set.
+func TestDeepMergeSettings_DifferentValueReportsConflict(t *testing.T) {
+	dst := map[string]interface{}{"model": "mine"}
+	src := map[string]interface{}{"model": "theirs"}
+	result, skipped := deepMergeSettings(dst, src, false)
+	if len(skipped) != 1 || skipped[0] != "model" {
+		t.Errorf("differing value: skipped = %v, want [model]", skipped)
+	}
+	if result["model"] != "mine" {
+		t.Errorf("existing value should be preserved without --force: %v", result)
+	}
+}
+
+// TestDeepMergeSettings_ForceOverwritesDifferent verifies that --force
+// overwrites a conflicting key and reports nothing in skipped.
+func TestDeepMergeSettings_ForceOverwritesDifferent(t *testing.T) {
+	dst := map[string]interface{}{"model": "mine"}
+	src := map[string]interface{}{"model": "theirs"}
+	result, skipped := deepMergeSettings(dst, src, true)
+	if len(skipped) != 0 {
+		t.Errorf("force: skipped should be empty, got %v", skipped)
+	}
+	if result["model"] != "theirs" {
+		t.Errorf("force: key should be overwritten, got %v", result["model"])
+	}
+}
+
+// TestDeepMergeSettings_NewKeyAdded verifies that a brand-new key from src is
+// merged into dst without conflict.
+func TestDeepMergeSettings_NewKeyAdded(t *testing.T) {
+	dst := map[string]interface{}{"existing": "a"}
+	src := map[string]interface{}{"new-key": "b"}
+	result, skipped := deepMergeSettings(dst, src, false)
+	if len(skipped) != 0 {
+		t.Errorf("new key: should produce no skipped, got %v", skipped)
+	}
+	if result["new-key"] != "b" || result["existing"] != "a" {
+		t.Errorf("new key merge: %v", result)
+	}
+}
+
+// TestAddSettingsReinstallNoNoise is an end-to-end test confirming that
+// re-installing a settings package whose values are already present produces
+// no "kept existing key" output on stderr — the false-conflict-noise fix.
+func TestAddSettingsReinstallNoNoise(t *testing.T) {
+	dir := t.TempDir()
+	// Pre-write settings.json with the same values the fixture will deliver.
+	_ = os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"model":"claude-opus-4"}`), 0o644)
+	fixtures := map[string]resolveFixture{
+		"env-settings": {kind: "settings", name: "env-settings", content: map[string]interface{}{
+			"settings": map[string]interface{}{
+				"model": "claude-opus-4", // same as existing — no conflict
+			},
+		}},
+	}
+	srv, _ := fakeServer(t, fixtures)
+	out, err := runAdd(t, srv, dir, "env-settings")
+	if err != nil {
+		t.Fatalf("re-install: %v", err)
+	}
+	if strings.Contains(out, "kept existing key") {
+		t.Errorf("re-install of identical settings should not print conflict noise: %s", out)
 	}
 }

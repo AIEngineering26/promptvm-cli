@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	"github.com/AIEngineering26/promptvm-cli/internal/hooks"
 	"github.com/AIEngineering26/promptvm-cli/internal/skills"
@@ -391,6 +392,10 @@ func installSettingsKind(cmd *cobra.Command, resp resolveResponse, opts installO
 // key-by-key; a scalar/array collision is overwritten only when force is set,
 // otherwise the existing value is kept and its key reported in skipped. dst is
 // returned (mutated in place) along with the list of preserved-conflict keys.
+//
+// Byte-identical values are never treated as conflicts: if the incoming value
+// is deeply equal to the existing value, the key is silently skipped so that a
+// re-install of a settings package that is already in place produces no noise.
 func deepMergeSettings(dst, src map[string]interface{}, force bool) (map[string]interface{}, []string) {
 	var skipped []string
 	for k, sv := range src {
@@ -407,7 +412,11 @@ func deepMergeSettings(dst, src map[string]interface{}, force bool) (map[string]
 			skipped = append(skipped, sub...)
 			continue
 		}
-		// Leaf conflict (scalar or array vs. existing value).
+		// Byte-identical leaf: no conflict — silently keep the existing value.
+		if reflect.DeepEqual(dv, sv) {
+			continue
+		}
+		// True leaf conflict (incoming value differs from existing value).
 		if force {
 			dst[k] = sv
 		} else {

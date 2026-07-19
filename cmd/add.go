@@ -15,6 +15,7 @@ import (
 	"github.com/AIEngineering26/promptvm-cli/internal/api"
 	"github.com/AIEngineering26/promptvm-cli/internal/installs"
 	"github.com/AIEngineering26/promptvm-cli/internal/prompt"
+	isatty "github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
@@ -33,18 +34,20 @@ const (
 	// installCounterTimeout bounds the best-effort install-counter POST. The
 	// install has already succeeded by the time it fires, so it stays short.
 	installCounterTimeout = 2 * time.Second
+	// resolveRetryBackoff is the pause between the initial resolve attempt and
+	// the single automatic retry on 502/503/504 (transient gateway errors). The
+	// resolve GET is idempotent and CDN-cached, so retrying is safe.
+	resolveRetryBackoff = 2 * time.Second
 )
 
 // isTTYFunc is indirected so tests can force the interactive / non-interactive
-// branch without a real terminal. It reports whether stdin is a character
-// device (a terminal), which is true for interactive shells and false when
-// piped or run under CI / npx without a TTY.
+// branch without a real terminal. It reports whether stdin is a real interactive
+// terminal using isatty.IsTerminal, which distinguishes /dev/null (a char device
+// that is NOT a real TTY) from an actual terminal — the key distinction that
+// prevents the huh prompt from crashing when stdin=/dev/null in CI / agent
+// harnesses. Cygwin pseudo-terminals are also accepted.
 var isTTYFunc = func() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
+	return isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
 }
 
 // confirmOverwriteFunc is indirected so tests can simulate the y/N answer.
@@ -118,8 +121,20 @@ func newAddCmd() *cobra.Command {
 			defer cancel()
 
 			var resp resolveResponse
-			if err := caller.GetWithContext(ctx, resolvePath(ref), &resp); err != nil {
-				return mapResolveError(err, args[0])
+			resolveErr := caller.GetWithContext(ctx, resolvePath(ref), &resp)
+			if resolveErr != nil && isRetryableResolveError(resolveErr) {
+				// Single automatic retry after a short backoff for transient
+				// gateway errors (502/503/504). The resolve GET is idempotent and
+				// CDN-cached so this is always safe. A cancelled context aborts
+				// the sleep immediately.
+				select {
+				case <-time.After(resolveRetryBackoff):
+				case <-ctx.Done():
+				}
+				resolveErr = caller.GetWithContext(ctx, resolvePath(ref), &resp)
+			}
+			if resolveErr != nil {
+				return mapResolveError(resolveErr, args[0])
 			}
 
 			opts := installOptions{
@@ -290,21 +305,46 @@ func decideOverwrite(cmd *cobra.Command, name, kind string, force bool) (bool, e
 	return ok, nil
 }
 
-// mapResolveError translates a resolve failure into the PRD-mandated, stack-free
-// user message: 409 → ambiguous (with candidates); 404/other HTTP → not found;
-// transport/timeout → unreachable.
+// isRetryableResolveError reports whether err is a transient gateway error
+// (502/503/504) that is safe to retry once. The resolve GET is idempotent and
+// CDN-cached, so a single automatic retry is appropriate for brief deploy
+// windows.
+func isRetryableResolveError(err error) bool {
+	var se *api.StatusError
+	if !errors.As(err, &se) {
+		return false
+	}
+	switch se.StatusCode {
+	case 502, 503, 504:
+		return true
+	}
+	return false
+}
+
+// mapResolveError translates a resolve failure into a PRD-mandated, stack-free
+// user message, branching on the HTTP status so users get an accurate diagnosis:
+//
+//   - 404 → not found on the marketplace (the ref does not exist / is not public)
+//   - 409 → ambiguous ref (bare name owned by multiple creators)
+//   - 5xx → marketplace temporarily unavailable (retry after a moment)
+//   - other HTTP → generic "unexpected error" with the status code
+//   - transport/timeout → could not reach the marketplace
 func mapResolveError(err error, ref string) error {
 	var se *api.StatusError
 	if errors.As(err, &se) {
-		if se.StatusCode == 409 {
+		switch se.StatusCode {
+		case 404:
+			return fmt.Errorf("%q not found on the marketplace", ref) //nolint:staticcheck // PRD-mandated user-facing message
+		case 409:
 			if amb := parseAmbiguous(se.Body); amb != nil && len(amb.Candidates) > 0 {
 				return fmt.Errorf("%q matches multiple creators. Did you mean: %s?", ref, strings.Join(amb.Candidates, ", ")) //nolint:staticcheck // PRD-mandated user-facing message
 			}
 			return fmt.Errorf("%q is ambiguous — retry with a creator/name reference.", ref) //nolint:staticcheck // PRD-mandated user-facing message
+		case 500, 502, 503, 504:
+			return errors.New("The marketplace is temporarily unavailable — please try again in a moment.") //nolint:staticcheck // PRD-mandated user-facing message
+		default:
+			return fmt.Errorf("unexpected marketplace error (HTTP %d) for %q — please try again", se.StatusCode, ref)
 		}
-		// 404 (not public / missing) and any other HTTP-level rejection map to
-		// "not found" — the ref is the user's only handle on the content.
-		return fmt.Errorf("%q not found on the marketplace", ref) //nolint:staticcheck // PRD-mandated user-facing message
 	}
 	// Any transport error (DNS, refused connection, context deadline) maps to
 	// the connectivity message.
