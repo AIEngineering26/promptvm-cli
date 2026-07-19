@@ -18,7 +18,8 @@ server** (tools prefixed `promptvm_*`).
 - Create / read / update / version a **prompt** and resolve it with variables.
 - Roll back, fork, or export a prompt; inspect its version history.
 - Upload or download a folder-shaped **agent skill** (`SKILL.md` + bundled files).
-- Install a Claude Code **hook** from the registry into local settings.
+- **Install marketplace content** of any kind (skill, agent, command, hook, mcp,
+  settings, prompt) with `promptvm add <creator/name>`.
 - Organize content with **workspaces**, **collections**, **directories**.
 - **Search** across an org, or browse / claim **marketplace** listings.
 - **Onboard an environment** end-to-end (`promptvm setup`), enable **Context
@@ -54,14 +55,19 @@ Check state with `promptvm auth status`. Override the API base with
 `--base-url` or `PROMPTVM_BASE_URL`. Add `-o json` to almost any command for
 machine-readable output.
 
-## The three content kinds
+## Content kinds
 
-- **prompt** — a versioned text template/instance, with `{{variable}}`
-  placeholders resolved client-side.
-- **skill** — a folder-shaped Agent Skill (agentskills.io): a `SKILL.md` with
-  YAML frontmatter (`name`, `description`) plus optional bundled files.
-- **hook** — a Claude Code lifecycle hook (events + matchers + handlers) merged
-  into `.claude/settings.json`.
+PromptVM manages seven installable content kinds:
+
+| Kind       | Description |
+|------------|-------------|
+| **prompt** | Versioned text template/instance with `{{variable}}` placeholders. |
+| **skill**  | Folder-shaped Agent Skill (`SKILL.md` + bundled files, agentskills.io format). |
+| **agent**  | Agent definition markdown file (standalone `.md`). |
+| **command** | Slash-command definition markdown file. |
+| **hook**   | Claude Code lifecycle hook (events + matchers + handlers) merged into `.claude/settings.json`. |
+| **settings** | Claude Code settings fragment deep-merged into `.claude/settings.json`. |
+| **mcp**    | MCP server entry merged into `.mcp.json`. |
 
 ## Command map
 
@@ -117,7 +123,28 @@ promptvm directories ...                  # alias: dirs
 promptvm resources ...                    # alias: res — bundled files
 ```
 
-### Marketplace
+### Marketplace — install content
+```bash
+# Install any marketplace content kind — no login required.
+# Canonical form: creator/name (e.g. claude-code-templates/frontend-design)
+promptvm add <creator/name>                          # install to ~/.claude/… (user scope)
+promptvm add <creator/name> --scope project          # install to ./.claude/… (project scope)
+promptvm add <creator/name> --dry-run                # preview; writes nothing
+promptvm add <creator/name> --force                  # overwrite without prompting
+promptvm add <creator/name> --stdout                 # print prompt to stdout (prompt kind only)
+# Backward-compatible: bare slug or legacy name-<id8> also resolve
+npx @promptvm/cli add <creator/name>                 # zero-install one-shot via npm
+```
+
+Where content lands (kind → target):
+- skill → `<scope>/.claude/skills/<name>/SKILL.md`
+- agent → `<scope>/.claude/agents/<name>.md`
+- command → `<scope>/.claude/commands/<name>.md`
+- prompt → `<scope>/.claude/prompts/<name>.md` (or `--stdout`)
+- hook / settings → merged into `<scope>/.claude/settings.json`
+- mcp → merged into `.mcp.json`
+
+### Marketplace — browse and publish
 ```bash
 promptvm marketplace browse search [query]   # browse is a parent: search|featured|categories
 promptvm marketplace listings create --prompt|--skill|--hook|--collection|--directory <id> \
@@ -180,7 +207,9 @@ CLI is not installed locally.
 ## Tips
 
 - Add `-o json` (or `-o yaml`) for structured output you can parse.
-- `--dry-run` previews `hooks install` without writing.
+- `--dry-run` previews `add` and `hooks install` changes without writing.
 - Most write commands accept `--yes` to skip interactive confirmation in CI.
-- Scope `hooks install`/`hooks list`/`hooks uninstall` with `--scope project` (cwd) or
-  `--scope user` (home). (Skills are placed via `skills download <id> <dir>`, not `--scope`.)
+- `promptvm add` installs every content kind; `--scope project` writes to the
+  current repo's `.claude/` instead of `~/.claude/`.
+- `hooks install`/`hooks list`/`hooks uninstall` also accept `--scope project|user`.
+  (Skills are placed via `skills download <id> <dir>`, not `--scope`.)
