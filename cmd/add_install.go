@@ -480,7 +480,7 @@ func installMCPKind(cmd *cobra.Command, resp resolveResponse, opts installOption
 			fmt.Fprintf(cmd.OutOrStdout(), "Dry-run: mcpServers[%q] already exists in %s (pass --force to overwrite)\n", serverKey, mcpPath)
 			return nil
 		}
-		return fmt.Errorf("MCP server %q already exists in %s. Pass --force to overwrite.", serverKey, mcpPath) //nolint:staticcheck // PRD-mandated user-facing message
+		return newNeedsForce("MCP server %q already exists in %s. Pass --force to overwrite.", serverKey, mcpPath) //nolint:staticcheck // PRD-mandated user-facing message
 	}
 
 	if opts.dryRun {
@@ -596,10 +596,19 @@ func installCollectionKind(cmd *cobra.Command, resp resolveResponse, opts instal
 	memberOpts.stdout = false
 
 	installedByKind := map[string]int{} // kind → count of members installed
-	declined := 0                       // members whose overwrite was declined
+	skippedLocal := 0                   // members declined / already-present (skipped, not failed)
 	var failures []string               // "<name> (<kind>): <reason>" for the summary
 
 	for _, item := range coll.Items {
+		// Defensive: the server contract never nests collections. Refuse to
+		// recurse on a malformed/hostile envelope rather than loop back into
+		// installCollectionKind via dispatchInstall.
+		if item.Kind == "collection" {
+			failures = append(failures, fmt.Sprintf("%s %q: nested collections are not supported", item.Kind, item.Name))
+			fmt.Fprintf(cmd.ErrOrStderr(), "Failed to install %s %q: nested collections are not supported\n", item.Kind, item.Name)
+			continue
+		}
+
 		// Synthesize the single-item resolve envelope the member would have had
 		// on its own. `Ref` is the member's canonical ref under this collection
 		// (creator/member when the collection ref is namespaced, else the bare
@@ -621,11 +630,18 @@ func installCollectionKind(cmd *cobra.Command, resp resolveResponse, opts instal
 		switch {
 		case err == nil:
 			installedByKind[item.Kind]++
-		case errors.Is(err, errInstallCancelled):
-			// User declined this member's overwrite → skipped, not failed
-			// (matches single-item semantics). Continue with the rest.
-			declined++
-			fmt.Fprintf(cmd.OutOrStdout(), "Skipped %s %q (overwrite declined)\n", item.Kind, item.Name)
+		case errors.Is(err, errInstallCancelled), errors.Is(err, errNeedsForce):
+			// Member skipped, not failed: either the user declined the overwrite
+			// prompt (errInstallCancelled) or the member is already present and
+			// --force was not passed (errNeedsForce — the common idempotent
+			// non-interactive re-install). Neither fails the command; a benign
+			// re-run of an already-installed stack must not report "failed".
+			skippedLocal++
+			reason := "already installed — pass --force to overwrite"
+			if errors.Is(err, errInstallCancelled) {
+				reason = "overwrite declined"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Skipped %s %q (%s)\n", item.Kind, item.Name, reason)
 		default:
 			// Hard failure (malformed content, filesystem error, unsupported
 			// member kind). Record it and keep going.
@@ -639,7 +655,7 @@ func installCollectionKind(cmd *cobra.Command, resp resolveResponse, opts instal
 		fmt.Fprintf(cmd.OutOrStdout(), "Skipped %q (%s)\n", sk.DisplayName, sk.Reason)
 	}
 
-	printCollectionSummary(cmd, opts, collLabel, installedByKind, coll.Skipped, declined, len(failures))
+	printCollectionSummary(cmd, opts, collLabel, installedByKind, coll.Skipped, skippedLocal, len(failures))
 
 	if len(failures) > 0 {
 		return fmt.Errorf("%d of the collection's members failed to install", len(failures)) //nolint:staticcheck // PRD-mandated user-facing message
@@ -660,7 +676,7 @@ func memberRef(collectionRef, memberName string) string {
 // printCollectionSummary prints the final one-line rollup, e.g.
 //
 //	Installed collection "Landing Page Studio": 6 skills, 1 prompt → ~/.claude; 1 skipped (resource); 0 failed
-func printCollectionSummary(cmd *cobra.Command, opts installOptions, label string, installedByKind map[string]int, serverSkipped []collectionSkipped, declined, failed int) {
+func printCollectionSummary(cmd *cobra.Command, opts installOptions, label string, installedByKind map[string]int, serverSkipped []collectionSkipped, skippedLocal, failed int) {
 	verb := "Installed"
 	if opts.dryRun {
 		verb = "Dry-run:"
@@ -688,7 +704,7 @@ func printCollectionSummary(cmd *cobra.Command, opts installOptions, label strin
 		target = opts.baseDir
 	}
 
-	skippedCount := len(serverSkipped) + declined
+	skippedCount := len(serverSkipped) + skippedLocal
 	fmt.Fprintf(cmd.OutOrStdout(), "%s collection %q: %s → %s; %d skipped; %d failed\n",
 		verb, label, installedDesc, target, skippedCount, failed)
 }

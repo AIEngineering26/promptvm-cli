@@ -755,6 +755,71 @@ func TestAddCollectionPartialFailureContinues(t *testing.T) {
 	}
 }
 
+// TestAddCollectionNonInteractiveReinstallSkips covers the common agent/CI path:
+// re-adding a collection whose members already exist, with NO TTY and NO --force.
+// Each already-present member must be reported as SKIPPED (not FAILED), and the
+// command must exit 0 — a benign idempotent re-run, not an error.
+func TestAddCollectionNonInteractiveReinstallSkips(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"studio": collectionFixture("studio", "Studio",
+			map[string]interface{}{"prompt": 1, "mcp": 1},
+			[]map[string]interface{}{
+				{"kind": "prompt", "name": "one", "displayName": "one", "position": 1,
+					"content": map[string]interface{}{"content": "one-body"}},
+				{"kind": "mcp", "name": "srv", "displayName": "srv", "position": 2,
+					"content": map[string]interface{}{"config": map[string]interface{}{"type": "http", "url": "https://x"}}},
+			}, nil),
+	}
+	srv, _ := fakeServer(t, fixtures)
+
+	// Force the non-interactive branch (isTTYFunc=false) — the agent/CI default.
+	origTTY := isTTYFunc
+	isTTYFunc = func() bool { return false }
+	defer func() { isTTYFunc = origTTY }()
+
+	// First install lands both members.
+	if out, err := runAdd(t, srv, dir, "studio"); err != nil {
+		t.Fatalf("first install: %v\n%s", err, out)
+	}
+	// Second install (same non-interactive env, no --force): both already exist.
+	out, err := runAdd(t, srv, dir, "studio")
+	if err != nil {
+		t.Fatalf("re-install must not fail the command: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "2 skipped") {
+		t.Errorf("both already-present members should be skipped: %s", out)
+	}
+	if !strings.Contains(out, "0 failed") {
+		t.Errorf("an idempotent re-install must report 0 failed: %s", out)
+	}
+	if !strings.Contains(out, "pass --force") {
+		t.Errorf("skip reason should hint at --force: %s", out)
+	}
+}
+
+// TestAddCollectionNestedRejected verifies a (contract-violating) member of kind
+// "collection" is refused as a hard failure rather than recursing.
+func TestAddCollectionNestedRejected(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"studio": collectionFixture("studio", "Studio",
+			map[string]interface{}{},
+			[]map[string]interface{}{
+				{"kind": "collection", "name": "inner", "displayName": "inner", "position": 1,
+					"content": map[string]interface{}{"items": []map[string]interface{}{}}},
+			}, nil),
+	}
+	srv, _ := fakeServer(t, fixtures)
+	out, err := runAdd(t, srv, dir, "studio")
+	if err == nil {
+		t.Fatalf("nested collection member should hard-fail the command\n%s", out)
+	}
+	if !strings.Contains(out, "nested collections are not supported") {
+		t.Errorf("expected nested-collection rejection message: %s", out)
+	}
+}
+
 func TestAddCollectionUnknownMemberKindSurfaced(t *testing.T) {
 	dir := t.TempDir()
 	fixtures := map[string]resolveFixture{
