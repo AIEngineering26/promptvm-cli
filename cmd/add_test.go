@@ -579,6 +579,278 @@ func TestAddUnsupportedKind(t *testing.T) {
 	}
 }
 
+// ─── collection fan-out ──────────────────────────────────────────────────────
+
+// collectionFixture builds a resolve fixture for a collection whose members are
+// the given items. Skill/agent member downloadUrls point back at the test server.
+func collectionFixture(name, displayName string, counts map[string]interface{}, items []map[string]interface{}, skipped []map[string]interface{}) resolveFixture {
+	return resolveFixture{
+		kind: "collection",
+		name: name,
+		content: map[string]interface{}{
+			"name":        displayName,
+			"description": "a bundle",
+			"counts":      counts,
+			"items":       items,
+			"skipped":     skipped,
+		},
+	}
+}
+
+func TestAddInstallsCollectionMixedKinds(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{}
+	srv, counterHit := fakeServer(t, fixtures)
+	fixtures["promptvm/studio"] = collectionFixture("studio", "Landing Page Studio",
+		map[string]interface{}{"skill": 1, "prompt": 1, "agent": 1},
+		[]map[string]interface{}{
+			{"kind": "skill", "name": "brand-system", "displayName": "brand-system", "position": 1,
+				"content": map[string]interface{}{
+					"raw_skill_md": "---\nname: brand-system\n---\nbody",
+					"files":        []map[string]interface{}{{"path": "a.txt", "downloadUrl": srv.URL + "/dl", "sizeBytes": 5}},
+				}},
+			{"kind": "prompt", "name": "copywriter", "displayName": "copywriter", "position": 2,
+				"content": map[string]interface{}{"content": "you write copy"}},
+			{"kind": "agent", "name": "the-agent", "displayName": "the-agent", "position": 3,
+				"content": map[string]interface{}{"raw_agent_md": "---\nname: the-agent\n---\nagent body", "files": []map[string]interface{}{}}},
+		}, nil)
+
+	out, err := runAdd(t, srv, dir, "promptvm/studio")
+	if err != nil {
+		t.Fatalf("add collection: %v\n%s", err, out)
+	}
+	// Each member landed at its correct target.
+	if md, err := os.ReadFile(filepath.Join(dir, "skills", "brand-system", "SKILL.md")); err != nil || !strings.Contains(string(md), "brand-system") {
+		t.Errorf("skill member not installed: %v %q", err, md)
+	}
+	if md, err := os.ReadFile(filepath.Join(dir, "prompts", "copywriter.md")); err != nil || !strings.Contains(string(md), "write copy") {
+		t.Errorf("prompt member not installed: %v %q", err, md)
+	}
+	if md, err := os.ReadFile(filepath.Join(dir, "agents", "the-agent.md")); err != nil || !strings.Contains(string(md), "agent body") {
+		t.Errorf("agent member not installed: %v %q", err, md)
+	}
+	if !strings.Contains(out, `Installed collection "Landing Page Studio"`) {
+		t.Errorf("missing collection summary: %s", out)
+	}
+	if !strings.Contains(out, "1 skill") || !strings.Contains(out, "1 prompt") || !strings.Contains(out, "1 agent") {
+		t.Errorf("summary missing per-kind counts: %s", out)
+	}
+	// Install counter fires ONCE for the collection ref (not per member).
+	if !*counterHit {
+		t.Error("install counter should fire for the collection ref")
+	}
+	// Each member is recorded in the install tracker (provenance).
+	tr, _ := os.ReadFile(filepath.Join(dir, ".promptvm-installs.json"))
+	if !strings.Contains(string(tr), `"name": "copywriter"`) {
+		t.Errorf("member not recorded in install tracker: %s", tr)
+	}
+}
+
+// TestMemberRef verifies member-ref derivation: a namespaced collection ref
+// yields "creator/<member>"; a bare collection ref yields the bare member name.
+func TestMemberRef(t *testing.T) {
+	if got := memberRef("promptvm/landing-page-studio", "copywriter"); got != "promptvm/copywriter" {
+		t.Errorf("namespaced: got %q, want promptvm/copywriter", got)
+	}
+	if got := memberRef("landing-page-studio", "copywriter"); got != "copywriter" {
+		t.Errorf("bare: got %q, want copywriter", got)
+	}
+}
+
+func TestAddCollectionDryRunWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"studio": collectionFixture("studio", "Studio",
+			map[string]interface{}{"prompt": 1},
+			[]map[string]interface{}{
+				{"kind": "prompt", "name": "copywriter", "displayName": "copywriter", "position": 1,
+					"content": map[string]interface{}{"content": "copy"}},
+			}, nil),
+	}
+	srv, counterHit := fakeServer(t, fixtures)
+	out, err := runAdd(t, srv, dir, "studio", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry-run collection: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "prompts")); !os.IsNotExist(err) {
+		t.Error("dry-run must not create any member files")
+	}
+	if !strings.Contains(out, "Dry-run:") {
+		t.Errorf("dry-run summary missing: %s", out)
+	}
+	if *counterHit {
+		t.Error("dry-run must not hit the install counter")
+	}
+}
+
+func TestAddCollectionForceOverwritesAll(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"studio": collectionFixture("studio", "Studio",
+			map[string]interface{}{"prompt": 2},
+			[]map[string]interface{}{
+				{"kind": "prompt", "name": "one", "displayName": "one", "position": 1,
+					"content": map[string]interface{}{"content": "new-one"}},
+				{"kind": "prompt", "name": "two", "displayName": "two", "position": 2,
+					"content": map[string]interface{}{"content": "new-two"}},
+			}, nil),
+	}
+	srv, _ := fakeServer(t, fixtures)
+	_ = os.MkdirAll(filepath.Join(dir, "prompts"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "prompts", "one.md"), []byte("old"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "prompts", "two.md"), []byte("old"), 0o644)
+
+	out, err := runAdd(t, srv, dir, "studio", "--force")
+	if err != nil {
+		t.Fatalf("force collection: %v\n%s", err, out)
+	}
+	one, _ := os.ReadFile(filepath.Join(dir, "prompts", "one.md"))
+	two, _ := os.ReadFile(filepath.Join(dir, "prompts", "two.md"))
+	if !strings.Contains(string(one), "new-one") || !strings.Contains(string(two), "new-two") {
+		t.Errorf("--force should overwrite all members: %q %q", one, two)
+	}
+}
+
+func TestAddCollectionPartialFailureContinues(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"studio": collectionFixture("studio", "Studio",
+			map[string]interface{}{"prompt": 2},
+			[]map[string]interface{}{
+				{"kind": "prompt", "name": "one", "displayName": "one", "position": 1,
+					"content": map[string]interface{}{"content": "one-body"}},
+				{"kind": "prompt", "name": "two", "displayName": "two", "position": 2,
+					"content": map[string]interface{}{"content": "two-body"}},
+			}, nil),
+	}
+	srv, _ := fakeServer(t, fixtures)
+	// Pre-create "one" so its overwrite is declined; "two" is fresh and installs.
+	_ = os.MkdirAll(filepath.Join(dir, "prompts"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "prompts", "one.md"), []byte("keep"), 0o644)
+
+	origTTY := isTTYFunc
+	origConfirm := confirmOverwriteFunc
+	isTTYFunc = func() bool { return true }
+	confirmOverwriteFunc = func(string) (bool, error) { return false, nil } // decline
+	defer func() { isTTYFunc = origTTY; confirmOverwriteFunc = origConfirm }()
+
+	out, err := runAdd(t, srv, dir, "studio")
+	// A declined overwrite is a skip, not a hard failure → no error.
+	if err != nil {
+		t.Fatalf("declined member should not fail the command: %v\n%s", err, out)
+	}
+	// "one" preserved (declined), "two" installed (loop continued).
+	one, _ := os.ReadFile(filepath.Join(dir, "prompts", "one.md"))
+	if string(one) != "keep" {
+		t.Errorf("declined member should be preserved, got %q", one)
+	}
+	if two, err := os.ReadFile(filepath.Join(dir, "prompts", "two.md")); err != nil || !strings.Contains(string(two), "two-body") {
+		t.Errorf("second member should still install after a declined first: %v %q", err, two)
+	}
+	if !strings.Contains(out, "1 skipped") {
+		t.Errorf("summary should report the declined member as skipped: %s", out)
+	}
+	if !strings.Contains(out, "0 failed") {
+		t.Errorf("declined member must not count as failed: %s", out)
+	}
+}
+
+func TestAddCollectionUnknownMemberKindSurfaced(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"studio": collectionFixture("studio", "Studio",
+			map[string]interface{}{"prompt": 1},
+			[]map[string]interface{}{
+				{"kind": "prompt", "name": "good", "displayName": "good", "position": 1,
+					"content": map[string]interface{}{"content": "good-body"}},
+				{"kind": "capture", "name": "weird", "displayName": "weird", "position": 2,
+					"content": map[string]interface{}{}},
+			}, nil),
+	}
+	srv, _ := fakeServer(t, fixtures)
+	out, err := runAdd(t, srv, dir, "studio")
+	// The unknown member hard-fails → non-zero exit, but does NOT crash and the
+	// good member still installs.
+	if err == nil {
+		t.Fatal("unknown member kind should produce a non-zero exit")
+	}
+	if md, rerr := os.ReadFile(filepath.Join(dir, "prompts", "good.md")); rerr != nil || !strings.Contains(string(md), "good-body") {
+		t.Errorf("good member should still install alongside a failing one: %v %q", rerr, md)
+	}
+	if !strings.Contains(out, "Unsupported content kind") {
+		t.Errorf("unknown member kind should be surfaced: %s", out)
+	}
+	if !strings.Contains(out, "1 failed") {
+		t.Errorf("summary should report 1 failed: %s", out)
+	}
+}
+
+func TestAddCollectionStdoutRejected(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"studio": collectionFixture("studio", "Studio",
+			map[string]interface{}{"prompt": 1},
+			[]map[string]interface{}{
+				{"kind": "prompt", "name": "copywriter", "displayName": "copywriter", "position": 1,
+					"content": map[string]interface{}{"content": "copy"}},
+			}, nil),
+	}
+	srv, _ := fakeServer(t, fixtures)
+	_, err := runAdd(t, srv, dir, "studio", "--stdout")
+	if err == nil || !strings.Contains(err.Error(), "--stdout is not supported for a collection") {
+		t.Errorf("want --stdout rejection, got %v", err)
+	}
+}
+
+func TestAddCollectionReportsServerSkipped(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"studio": collectionFixture("studio", "Studio",
+			map[string]interface{}{"prompt": 1, "skipped": 1},
+			[]map[string]interface{}{
+				{"kind": "prompt", "name": "copywriter", "displayName": "copywriter", "position": 1,
+					"content": map[string]interface{}{"content": "copy"}},
+			},
+			[]map[string]interface{}{
+				{"reason": "resource", "displayName": "example-asset", "position": 2},
+			}),
+	}
+	srv, _ := fakeServer(t, fixtures)
+	out, err := runAdd(t, srv, dir, "studio")
+	if err != nil {
+		t.Fatalf("add: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "example-asset") || !strings.Contains(out, "resource") {
+		t.Errorf("server-skipped member not reported: %s", out)
+	}
+	if !strings.Contains(out, "1 skipped") {
+		t.Errorf("summary should count the server-skipped member: %s", out)
+	}
+}
+
+// TestAddCollectionNonSlugDisplayNameInstalls covers AC-10: a member whose
+// free-text displayName is not slug-shaped still installs cleanly via its
+// canonical slug `name`, never crashing the whole install.
+func TestAddCollectionNonSlugDisplayNameInstalls(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"studio": collectionFixture("studio", "Studio",
+			map[string]interface{}{"prompt": 1},
+			[]map[string]interface{}{
+				{"kind": "prompt", "name": "landing-page-copywriter", "displayName": "Landing Page Copywriter!!", "position": 1,
+					"content": map[string]interface{}{"content": "copy"}},
+			}, nil),
+	}
+	srv, _ := fakeServer(t, fixtures)
+	out, err := runAdd(t, srv, dir, "studio")
+	if err != nil {
+		t.Fatalf("non-slug displayName should still install via slug name: %v\n%s", err, out)
+	}
+	if md, rerr := os.ReadFile(filepath.Join(dir, "prompts", "landing-page-copywriter.md")); rerr != nil || !strings.Contains(string(md), "copy") {
+		t.Errorf("member should install at its slug name: %v %q", rerr, md)
+	}
+}
+
 // ─── P1 #4: status-code → error message mapping ──────────────────────────────
 
 // TestMapResolveError_StatusMapping verifies that each HTTP status code maps to
@@ -746,7 +1018,7 @@ func TestDeepMergeSettings_IdenticalValueNoConflict(t *testing.T) {
 		"env":   map[string]interface{}{"TRACE": "1", "KEEP": "yes"},
 	}
 	src := map[string]interface{}{
-		"model": "claude-opus-4",               // identical scalar → no conflict
+		"model": "claude-opus-4",                      // identical scalar → no conflict
 		"env":   map[string]interface{}{"TRACE": "1"}, // identical nested scalar → no conflict
 	}
 	_, skipped := deepMergeSettings(dst, src, false)

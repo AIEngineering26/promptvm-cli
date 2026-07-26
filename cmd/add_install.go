@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 
 	"github.com/AIEngineering26/promptvm-cli/internal/hooks"
 	"github.com/AIEngineering26/promptvm-cli/internal/skills"
@@ -529,4 +531,172 @@ func mcpServerEntry(raw map[string]interface{}) map[string]interface{} {
 		}
 	}
 	return entry
+}
+
+// ─── collection (fan-out to per-kind installers) ─────────────────────────────
+
+// collectionContent is the resolve `content` shape for a collection kind. Each
+// item's `content` is byte-identical to that kind's single-item resolve payload
+// (§6), so a synthetic per-member resolveResponse can be fed straight through
+// the existing per-kind dispatch. `name` is the server-supplied canonical slug
+// (the listing nameSlug, guaranteed slug-valid), NOT the free-text displayName.
+type collectionContent struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Counts      map[string]int      `json:"counts"`
+	Items       []collectionItem    `json:"items"`
+	Skipped     []collectionSkipped `json:"skipped"`
+}
+
+type collectionItem struct {
+	Kind        string          `json:"kind"`
+	Name        string          `json:"name"`
+	DisplayName string          `json:"displayName"`
+	Position    int             `json:"position"`
+	Content     json.RawMessage `json:"content"`
+}
+
+type collectionSkipped struct {
+	Reason      string `json:"reason"`
+	DisplayName string `json:"displayName"`
+	Position    int    `json:"position"`
+}
+
+// installCollectionKind fans a resolved collection out to the existing per-kind
+// installers, one synthetic single-item resolve per member, and prints a
+// combined summary.
+//
+// Partial-failure policy (AC-8): a declined overwrite (errInstallCancelled) or a
+// hard write/parse/unknown-kind error on ONE member never aborts the rest — each
+// member's outcome is collected and the loop continues. A user-declined
+// overwrite counts as *skipped*, matching single-item add semantics (declining a
+// collision is a user choice, not a failure); only a hard failure (malformed
+// content, filesystem error, unsupported member kind) marks the member failed.
+// The command exits non-zero iff at least one member hard-failed.
+func installCollectionKind(cmd *cobra.Command, resp resolveResponse, opts installOptions) error {
+	// --stdout is single-prompt only; a collection has many members and no
+	// single body to print, so reject it up front with a clear message (OQ-2).
+	if opts.stdout {
+		return fmt.Errorf("--stdout is not supported for a collection (%q); it applies to a single prompt only", resp.Name) //nolint:staticcheck // PRD-mandated user-facing message
+	}
+
+	var coll collectionContent
+	if err := json.Unmarshal(resp.Content, &coll); err != nil {
+		return fmt.Errorf("Collection %q returned malformed content: %s", resp.Name, err) //nolint:staticcheck // PRD-mandated user-facing message
+	}
+
+	collLabel := coll.Name
+	if collLabel == "" {
+		collLabel = resp.Name
+	}
+
+	// Per-member opts: force stdout off (a member is never printed to stdout),
+	// everything else (scope/baseDir/force/dryRun) applies to every member.
+	memberOpts := opts
+	memberOpts.stdout = false
+
+	installedByKind := map[string]int{} // kind → count of members installed
+	declined := 0                       // members whose overwrite was declined
+	var failures []string               // "<name> (<kind>): <reason>" for the summary
+
+	for _, item := range coll.Items {
+		// Synthesize the single-item resolve envelope the member would have had
+		// on its own. `Ref` is the member's canonical ref under this collection
+		// (creator/member when the collection ref is namespaced, else the bare
+		// member name) so the install tracker records a stable, resolvable key.
+		member := resolveResponse{
+			Kind:        item.Kind,
+			Name:        item.Name,
+			ListingID:   resp.ListingID,
+			FileID:      resp.FileID,
+			ResolvedVia: resp.ResolvedVia,
+			Creator:     resp.Creator,
+			Ref:         memberRef(resp.Ref, item.Name),
+			Content:     item.Content,
+		}
+
+		// Route through the SAME per-kind dispatch the top-level add uses, so
+		// kind→installer routing (including the unknown-kind default) stays DRY.
+		err := dispatchInstall(cmd, member, memberOpts)
+		switch {
+		case err == nil:
+			installedByKind[item.Kind]++
+		case errors.Is(err, errInstallCancelled):
+			// User declined this member's overwrite → skipped, not failed
+			// (matches single-item semantics). Continue with the rest.
+			declined++
+			fmt.Fprintf(cmd.OutOrStdout(), "Skipped %s %q (overwrite declined)\n", item.Kind, item.Name)
+		default:
+			// Hard failure (malformed content, filesystem error, unsupported
+			// member kind). Record it and keep going.
+			failures = append(failures, fmt.Sprintf("%s %q: %s", item.Kind, item.Name, err))
+			fmt.Fprintf(cmd.ErrOrStderr(), "Failed to install %s %q: %s\n", item.Kind, item.Name, err)
+		}
+	}
+
+	// Server-side skips (resources, non-servable members) are reported verbatim.
+	for _, sk := range coll.Skipped {
+		fmt.Fprintf(cmd.OutOrStdout(), "Skipped %q (%s)\n", sk.DisplayName, sk.Reason)
+	}
+
+	printCollectionSummary(cmd, opts, collLabel, installedByKind, coll.Skipped, declined, len(failures))
+
+	if len(failures) > 0 {
+		return fmt.Errorf("%d of the collection's members failed to install", len(failures)) //nolint:staticcheck // PRD-mandated user-facing message
+	}
+	return nil
+}
+
+// memberRef builds a member's canonical ref from the collection ref. A
+// namespaced collection ref ("creator/collection") yields "creator/<member>";
+// a bare collection ref yields the bare member name.
+func memberRef(collectionRef, memberName string) string {
+	if idx := strings.IndexByte(collectionRef, '/'); idx >= 0 {
+		return collectionRef[:idx] + "/" + memberName
+	}
+	return memberName
+}
+
+// printCollectionSummary prints the final one-line rollup, e.g.
+//
+//	Installed collection "Landing Page Studio": 6 skills, 1 prompt → ~/.claude; 1 skipped (resource); 0 failed
+func printCollectionSummary(cmd *cobra.Command, opts installOptions, label string, installedByKind map[string]int, serverSkipped []collectionSkipped, declined, failed int) {
+	verb := "Installed"
+	if opts.dryRun {
+		verb = "Dry-run:"
+	}
+
+	// Per-kind counts in a stable order so the summary is deterministic.
+	order := []string{"skill", "prompt", "agent", "command", "hook", "settings", "mcp"}
+	var parts []string
+	for _, k := range order {
+		if n := installedByKind[k]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, pluralizeKind(k, n)))
+		}
+	}
+	installedDesc := "nothing"
+	if len(parts) > 0 {
+		installedDesc = strings.Join(parts, ", ")
+	}
+
+	target := "~/.claude"
+	switch opts.scope {
+	case "project":
+		target = "./.claude"
+	}
+	if opts.baseDir != "" {
+		target = opts.baseDir
+	}
+
+	skippedCount := len(serverSkipped) + declined
+	fmt.Fprintf(cmd.OutOrStdout(), "%s collection %q: %s → %s; %d skipped; %d failed\n",
+		verb, label, installedDesc, target, skippedCount, failed)
+}
+
+// pluralizeKind returns the kind label pluralized for n items (n==1 → singular).
+func pluralizeKind(kind string, n int) string {
+	if n == 1 {
+		return kind
+	}
+	return kind + "s"
 }

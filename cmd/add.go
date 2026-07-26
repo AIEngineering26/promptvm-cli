@@ -196,6 +196,8 @@ func dispatchInstall(cmd *cobra.Command, resp resolveResponse, opts installOptio
 		return installSettingsKind(cmd, resp, opts)
 	case "mcp":
 		return installMCPKind(cmd, resp, opts)
+	case "collection":
+		return installCollectionKind(cmd, resp, opts)
 	default:
 		return fmt.Errorf("Unsupported content kind %q for %q — upgrade the CLI to install it.", resp.Kind, resp.Name) //nolint:staticcheck // PRD-mandated user-facing message
 	}
