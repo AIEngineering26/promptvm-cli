@@ -56,6 +56,26 @@ var confirmOverwriteFunc = prompt.Confirm
 // errInstallCancelled is returned when the user declines an overwrite prompt.
 var errInstallCancelled = errors.New("Installation cancelled.") //nolint:staticcheck // PRD-mandated user-facing message
 
+// errNeedsForce marks a collision the user could resolve by re-running with
+// --force. On a single `add` it surfaces as a hard error whose message tells the
+// user to pass --force (behavior unchanged). Inside a collection fan-out it is
+// treated as a per-member SKIP, so a benign re-install of an already-present
+// stack — the common non-interactive (agent/CI) path — reports "skipped", not
+// "failed", and does not fail the whole command.
+var errNeedsForce = errors.New("needs --force")
+
+// needsForceError carries the exact user-facing "already exists … pass --force"
+// message while remaining matchable via errors.Is(err, errNeedsForce).
+type needsForceError struct{ msg string }
+
+func (e *needsForceError) Error() string        { return e.msg }
+func (e *needsForceError) Is(target error) bool { return target == errNeedsForce }
+
+// newNeedsForce builds a needsForceError with a formatted user-facing message.
+func newNeedsForce(format string, args ...any) error {
+	return &needsForceError{msg: fmt.Sprintf(format, args...)}
+}
+
 // resolveResponse is the unified marketplace resolve payload
 // (GET /api/v1/marketplace/resolve?ref=…). Every content kind shares this
 // envelope; the kind-specific fields live in Content, which the per-kind
@@ -196,6 +216,8 @@ func dispatchInstall(cmd *cobra.Command, resp resolveResponse, opts installOptio
 		return installSettingsKind(cmd, resp, opts)
 	case "mcp":
 		return installMCPKind(cmd, resp, opts)
+	case "collection":
+		return installCollectionKind(cmd, resp, opts)
 	default:
 		return fmt.Errorf("Unsupported content kind %q for %q — upgrade the CLI to install it.", resp.Kind, resp.Name) //nolint:staticcheck // PRD-mandated user-facing message
 	}
@@ -292,7 +314,7 @@ func decideOverwrite(cmd *cobra.Command, name, kind string, force bool) (bool, e
 		return true, nil
 	}
 	if !isTTYFunc() {
-		return false, fmt.Errorf("%s %q already exists. Pass --force to overwrite.", capitalize(kind), name) //nolint:staticcheck // PRD-mandated user-facing message
+		return false, newNeedsForce("%s %q already exists. Pass --force to overwrite.", capitalize(kind), name) //nolint:staticcheck // PRD-mandated user-facing message
 	}
 	ok, err := confirmOverwriteFunc(fmt.Sprintf("Overwrite existing %s '%s'? (y/N)", kind, name))
 	if err != nil {
