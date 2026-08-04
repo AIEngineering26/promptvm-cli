@@ -107,11 +107,12 @@ type ambiguousError struct {
 
 func newAddCmd() *cobra.Command {
 	var (
-		force   bool
-		dryRun  bool
-		scope   string
-		baseDir string
-		stdout  bool
+		force    bool
+		dryRun   bool
+		scope    string
+		baseDir  string
+		stdout   bool
+		buzzPack string
 	)
 
 	cmd := &cobra.Command{
@@ -127,12 +128,35 @@ func newAddCmd() *cobra.Command {
 			"  settings → merged into .claude/settings.json\n" +
 			"  mcp      → merged into .mcp.json\n\n" +
 			"Accepts a bare <name>, a legacy <name>-<id8> slug, or the namespaced\n" +
-			"creator/name form (e.g. claude-code-templates/frontend-design).",
+			"creator/name form (e.g. claude-code-templates/frontend-design).\n\n" +
+			"With --buzz-pack <dir>, install skill/mcp/collection content into a Buzz\n" +
+			"persona pack instead (scaffolds a valid pack if the directory is empty).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ref, err := parseAddRef(args[0])
 			if err != nil {
 				return err
+			}
+
+			// --buzz-pack switches the install destination to a Buzz persona
+			// pack. It is mutually exclusive with the .claude-root flags; the
+			// check uses Changed() (not values) because --scope has a non-empty
+			// default. Presence is what selects the target.
+			buzzPackRoot := ""
+			if cmd.Flags().Changed("buzz-pack") {
+				for _, f := range []string{"scope", "skills-dir", "stdout"} {
+					if cmd.Flags().Changed(f) {
+						return fmt.Errorf("--buzz-pack cannot be combined with --%s", f) //nolint:staticcheck // PRD-mandated user-facing message
+					}
+				}
+				if strings.TrimSpace(buzzPack) == "" {
+					return errors.New("--buzz-pack requires a directory path") //nolint:staticcheck // PRD-mandated user-facing message
+				}
+				root, rerr := resolveBuzzPackRoot(buzzPack)
+				if rerr != nil {
+					return rerr
+				}
+				buzzPackRoot = root
 			}
 
 			// Resolve the content anonymously via the unified endpoint.
@@ -158,14 +182,21 @@ func newAddCmd() *cobra.Command {
 			}
 
 			opts := installOptions{
-				scope:   scope,
-				baseDir: baseDir,
-				force:   force,
-				dryRun:  dryRun,
-				stdout:  stdout,
+				scope:    scope,
+				baseDir:  baseDir,
+				force:    force,
+				dryRun:   dryRun,
+				stdout:   stdout,
+				buzzPack: buzzPackRoot,
 			}
 			if err := dispatchInstall(cmd, resp, opts); err != nil {
 				return err
+			}
+
+			// Buzz packs get a one-line validate hint (centralized so per-kind
+			// installers stay agnostic). Skipped on dry-run.
+			if buzzPackRoot != "" && !dryRun {
+				fmt.Fprintf(cmd.OutOrStdout(), "Run: buzz pack validate %s\n", buzzPack)
 			}
 
 			// Best-effort install counter — never fails the install. Skipped on
@@ -182,6 +213,7 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview the changes without writing anything")
 	cmd.Flags().StringVar(&scope, "scope", "user", "Install scope: user (~/.claude) or project (./.claude)")
 	cmd.Flags().BoolVar(&stdout, "stdout", false, "For prompt kind: print the body to stdout instead of writing a file")
+	cmd.Flags().StringVar(&buzzPack, "buzz-pack", "", "Install skill/mcp/collection content into a Buzz persona pack at this directory")
 	// Hidden override for tests; defaults to the resolved scope root's .claude dir.
 	cmd.Flags().StringVar(&baseDir, "skills-dir", "", "Override the install root (.claude) directory (advanced/testing)")
 	_ = cmd.Flags().MarkHidden("skills-dir")
@@ -196,11 +228,26 @@ type installOptions struct {
 	force   bool
 	dryRun  bool
 	stdout  bool
+	// buzzPack, when non-empty, is the absolute symlink-resolved root of a Buzz
+	// persona pack to install into instead of a .claude root. Only skill/mcp/
+	// collection installers honor it; every other kind is rejected before it runs.
+	buzzPack string
 }
 
 // dispatchInstall routes a resolved item to the installer for its kind. Unknown
 // kinds are rejected with a clear message rather than silently ignored.
 func dispatchInstall(cmd *cobra.Command, resp resolveResponse, opts installOptions) error {
+	// A Buzz pack only accepts the kinds whose on-disk format it shares with
+	// PromptVM (skill, mcp) plus collection (which fans out to those). Every
+	// other kind is refused BEFORE any installer runs, so a member never leaks
+	// into a .claude target.
+	if opts.buzzPack != "" {
+		switch resp.Kind {
+		case "skill", "mcp", "collection":
+		default:
+			return fmt.Errorf("kind %q is not supported with --buzz-pack (supported: skill, mcp, collection)", resp.Kind) //nolint:staticcheck // PRD-mandated user-facing message
+		}
+	}
 	switch resp.Kind {
 	case "skill":
 		return installSkillKind(cmd, resp, opts)
