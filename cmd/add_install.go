@@ -24,11 +24,28 @@ func installSkillKind(cmd *cobra.Command, resp resolveResponse, opts installOpti
 	if err != nil {
 		return err
 	}
-	root, err := resolveClaudeRoot(opts.scope, opts.baseDir)
-	if err != nil {
-		return err
+	// Buzz pack: skills go to <pack>/skills/<name> (byte-identical layout), the
+	// pack is scaffolded on first use, and the install tracker is suppressed
+	// (a pack is not a .claude root). Otherwise, the unchanged .claude path.
+	var root, target string
+	if opts.buzzPack != "" {
+		if err := ensureBuzzPackScaffold(cmd, opts.buzzPack, opts.dryRun, opts.force); err != nil {
+			return err
+		}
+		if err := buzzPackRefuseSymlinkedSubdir(opts.buzzPack, "skills"); err != nil {
+			return err
+		}
+		target = filepath.Join(opts.buzzPack, "skills", name)
+		if err := buzzPackContained(opts.buzzPack, target); err != nil {
+			return err
+		}
+	} else {
+		root, err = resolveClaudeRoot(opts.scope, opts.baseDir)
+		if err != nil {
+			return err
+		}
+		target = filepath.Join(root, "skills", name)
 	}
-	target := filepath.Join(root, "skills", name)
 
 	var d skillDetail
 	if err := json.Unmarshal(resp.Content, &d); err != nil {
@@ -71,6 +88,9 @@ func installSkillKind(cmd *cobra.Command, resp resolveResponse, opts installOpti
 		return mapWriteError(err, target)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Installed skill %q to %s (%d file(s) + SKILL.md)\n", name, target, len(bundle.Files))
+	if opts.buzzPack != "" {
+		return regenerateManagedPersonaSkills(cmd, opts.buzzPack, "skills/"+name)
+	}
 	recordInstall(cmd, root, resp, canonicalRef(resp, name), target)
 	return nil
 }
@@ -440,13 +460,27 @@ func installMCPKind(cmd *cobra.Command, resp resolveResponse, opts installOption
 	if err != nil {
 		return err
 	}
-	root, err := resolveClaudeRoot(opts.scope, opts.baseDir)
-	if err != nil {
-		return err
+	// Buzz pack: .mcp.json lives at the pack root itself (NOT filepath.Dir),
+	// which is where `buzz` reads it. Scaffold the pack first and suppress the
+	// tracker. Otherwise, the unchanged .claude behavior (parent of .claude root).
+	var root, mcpPath string
+	if opts.buzzPack != "" {
+		if err := ensureBuzzPackScaffold(cmd, opts.buzzPack, opts.dryRun, opts.force); err != nil {
+			return err
+		}
+		mcpPath = filepath.Join(opts.buzzPack, ".mcp.json")
+		if err := buzzPackContained(opts.buzzPack, mcpPath); err != nil {
+			return err
+		}
+	} else {
+		root, err = resolveClaudeRoot(opts.scope, opts.baseDir)
+		if err != nil {
+			return err
+		}
+		// .mcp.json lives at the project root (the parent of .claude), matching
+		// where Claude Code reads it and `promptvm mcp install`.
+		mcpPath = filepath.Join(filepath.Dir(root), ".mcp.json")
 	}
-	// .mcp.json lives at the project root (the parent of .claude), matching
-	// where Claude Code reads it and `promptvm mcp install`.
-	mcpPath := filepath.Join(filepath.Dir(root), ".mcp.json")
 
 	var config map[string]interface{}
 	if err := json.Unmarshal(resp.Content, &config); err != nil {
@@ -508,7 +542,9 @@ func installMCPKind(cmd *cobra.Command, resp resolveResponse, opts installOption
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Installed MCP server %q into %s\n", serverKey, mcpPath)
-	recordInstall(cmd, root, resp, canonicalRef(resp, name), mcpPath)
+	if opts.buzzPack == "" {
+		recordInstall(cmd, root, resp, canonicalRef(resp, name), mcpPath)
+	}
 	return nil
 }
 
@@ -597,6 +633,7 @@ func installCollectionKind(cmd *cobra.Command, resp resolveResponse, opts instal
 
 	installedByKind := map[string]int{} // kind → count of members installed
 	skippedLocal := 0                   // members declined / already-present (skipped, not failed)
+	supportedSeen := 0                  // buzz: members of a pack-supported kind (skill/mcp)
 	var failures []string               // "<name> (<kind>): <reason>" for the summary
 
 	for _, item := range coll.Items {
@@ -607,6 +644,18 @@ func installCollectionKind(cmd *cobra.Command, resp resolveResponse, opts instal
 			failures = append(failures, fmt.Sprintf("%s %q: nested collections are not supported", item.Kind, item.Name))
 			fmt.Fprintf(cmd.ErrOrStderr(), "Failed to install %s %q: nested collections are not supported\n", item.Kind, item.Name)
 			continue
+		}
+
+		// Buzz pack: warn-skip members whose kind the pack can't hold (only
+		// skill/mcp map onto a pack), so an unsupported member is never a hard
+		// failure and never routed to a .claude installer.
+		if opts.buzzPack != "" {
+			if item.Kind != "skill" && item.Kind != "mcp" {
+				skippedLocal++
+				fmt.Fprintf(cmd.OutOrStdout(), "Skipped %s %q (not supported in a Buzz pack)\n", item.Kind, item.Name)
+				continue
+			}
+			supportedSeen++
 		}
 
 		// Synthesize the single-item resolve envelope the member would have had
@@ -660,6 +709,10 @@ func installCollectionKind(cmd *cobra.Command, resp resolveResponse, opts instal
 	if len(failures) > 0 {
 		return fmt.Errorf("%d of the collection's members failed to install", len(failures)) //nolint:staticcheck // PRD-mandated user-facing message
 	}
+	// Buzz pack: a collection with no skill/mcp members can't populate a pack.
+	if opts.buzzPack != "" && supportedSeen == 0 {
+		return fmt.Errorf("collection %q has no skill or mcp members to install into a Buzz pack", collLabel) //nolint:staticcheck // PRD-mandated user-facing message
+	}
 	return nil
 }
 
@@ -702,6 +755,9 @@ func printCollectionSummary(cmd *cobra.Command, opts installOptions, label strin
 	}
 	if opts.baseDir != "" {
 		target = opts.baseDir
+	}
+	if opts.buzzPack != "" {
+		target = opts.buzzPack
 	}
 
 	skippedCount := len(serverSkipped) + skippedLocal
