@@ -96,6 +96,66 @@ func TestSpliceSkillsList(t *testing.T) {
 	}
 }
 
+func TestSpliceSkillsListEdgeCases(t *testing.T) {
+	// Inline list with a trailing comment: foreign entry preserved, not dropped.
+	out, _, err := spliceSkillsList("---\nname: s\nskills: [custom/ref, skills/old] # mine\n---\nb", []string{"skills/new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "- custom/ref") || !strings.Contains(out, "- skills/new") {
+		t.Errorf("inline+comment: foreign/new missing:\n%s", out)
+	}
+	if strings.Contains(out, "skills/old") {
+		t.Errorf("inline+comment: stale skills/ kept:\n%s", out)
+	}
+	// Block list with a blank line between items: no stale survivor past the block.
+	out2, _, _ := spliceSkillsList("---\nname: s\nskills:\n  - skills/old\n\n  - skills/old2\ndescription: d\n---\nb", []string{"skills/new"})
+	if strings.Contains(out2, "skills/old") {
+		t.Errorf("block+blank: stale entries survived:\n%s", out2)
+	}
+	if !strings.Contains(out2, "description: d") {
+		t.Errorf("block+blank: following key lost:\n%s", out2)
+	}
+	// Indented non-list continuation is consumed (no mixed sequence/mapping YAML).
+	out3, _, _ := spliceSkillsList("---\nname: s\nskills:\n  weird: stuff\n---\nb", []string{"skills/x"})
+	if strings.Contains(out3, "weird: stuff") {
+		t.Errorf("nested continuation not dropped → invalid YAML:\n%s", out3)
+	}
+	if !strings.Contains(out3, "skills:\n  - skills/x") {
+		t.Errorf("nested continuation: skills not written:\n%s", out3)
+	}
+	// Prefix collision: a `skills-foo:` key must NOT be treated as skills:.
+	out4, _, _ := spliceSkillsList("---\nname: s\nskills-foo: bar\nskills: []\n---\nb", []string{"skills/x"})
+	if !strings.Contains(out4, "skills-foo: bar") {
+		t.Errorf("prefix-collision key clobbered:\n%s", out4)
+	}
+	// Quoted inline entry is unquoted (no duplicate with the disk entry).
+	out5, _, _ := spliceSkillsList("---\nname: s\nskills: [\"skills/x\"]\n---\nb", []string{"skills/x"})
+	if strings.Count(out5, "skills/x") != 1 {
+		t.Errorf("quoted entry duplicated:\n%s", out5)
+	}
+	// CRLF file stays uniformly CRLF.
+	out6, _, _ := spliceSkillsList("---\r\nname: s\r\nskills: []\r\n---\r\nbody", []string{"skills/x"})
+	if strings.Contains(out6, "\n") && !strings.Contains(out6, "\r\n") {
+		t.Errorf("CRLF not preserved:\n%q", out6)
+	}
+	if strings.Contains(strings.ReplaceAll(out6, "\r\n", ""), "\r") {
+		t.Errorf("stray CR:\n%q", out6)
+	}
+}
+
+// stripSkillsBlock removes the `skills:` block from persona frontmatter so two
+// personas can be compared byte-for-byte ignoring only that block.
+func stripSkillsBlock(t *testing.T, content string) string {
+	t.Helper()
+	// Replacing with a fixed sentinel list normalizes the block away.
+	out, _, err := spliceSkillsList(content, []string{"skills/__norm__"})
+	if err != nil {
+		t.Fatalf("stripSkillsBlock: %v", err)
+	}
+	return out
+}
+
 // ─── AC behavior tests (no real buzz binary needed) ──────────────────────────
 
 func readManaged(t *testing.T, pack string) string {
@@ -222,6 +282,9 @@ func TestBuzzPackCollectionWarnSkipsUnsupported(t *testing.T) { // AC4
 	if err == nil {
 		t.Error("expected error for zero supported members")
 	}
+	if _, statErr := os.Stat(pack2); statErr == nil {
+		t.Error("all-unsupported collection should write nothing")
+	}
 }
 
 func TestBuzzPackPreExistingNonMutation(t *testing.T) { // AC5
@@ -277,13 +340,12 @@ func TestBuzzPackManagedPersonaPreservesUserFrontmatter(t *testing.T) { // AC6
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(filepath.Join(pack, "agents", "p.persona.md"))
-	for _, keep := range []string{"model: anthropic:claude-opus-4-8", "temperature: 0.4", "triggers:", "  mentions: true", "    - hi", "Body stays."} {
-		if !strings.Contains(string(got), keep) {
-			t.Errorf("lost %q after regen:\n%s", keep, got)
-		}
-	}
 	if !strings.Contains(string(got), "- skills/found") {
 		t.Errorf("skill not added:\n%s", got)
+	}
+	// AC6: everything except the skills: block is byte-identical.
+	if before, after := stripSkillsBlock(t, persona), stripSkillsBlock(t, string(got)); before != after {
+		t.Errorf("non-skills frontmatter/body changed:\n--- before ---\n%s\n--- after ---\n%s", before, after)
 	}
 }
 
@@ -297,6 +359,9 @@ func TestBuzzPackFlagMutualExclusion(t *testing.T) { // AC7
 	} {
 		if _, err := runAddRaw(t, srv.URL, bad...); err == nil {
 			t.Errorf("expected exclusion error for %v", bad)
+		}
+		if _, err := os.Stat(pack); err == nil {
+			t.Errorf("flag error for %v must write nothing", bad)
 		}
 	}
 }
@@ -328,6 +393,12 @@ func TestBuzzPackDryRunWritesNothing(t *testing.T) { // AC9
 	if _, err := os.Stat(pack); err == nil {
 		t.Error("dry-run created the pack dir")
 	}
+	// AC9 also requires listing the planned paths.
+	for _, want := range []string{"plugin.json", ".persona.md", filepath.Join("skills", "found")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry-run output missing planned path %q:\n%s", want, out)
+		}
+	}
 }
 
 func TestBuzzPackMultipleManagedPersonasError(t *testing.T) { // AC12
@@ -340,6 +411,8 @@ func TestBuzzPackMultipleManagedPersonasError(t *testing.T) { // AC12
 	must(t, os.WriteFile(filepath.Join(pack, "agents", "a.persona.md"), []byte(dup), 0o644))
 	must(t, os.WriteFile(filepath.Join(pack, "agents", "b.persona.md"), []byte(strings.Replace(dup, "name: a", "name: b", 1)), 0o644))
 
+	beforeA, _ := os.ReadFile(filepath.Join(pack, "agents", "a.persona.md"))
+	beforeB, _ := os.ReadFile(filepath.Join(pack, "agents", "b.persona.md"))
 	fixtures := map[string]resolveFixture{}
 	srv, _ := fakeServer(t, fixtures)
 	fixtures["found"] = skillFixture(srv.URL)
@@ -347,6 +420,61 @@ func TestBuzzPackMultipleManagedPersonasError(t *testing.T) { // AC12
 	if err == nil || !strings.Contains(err.Error(), "multiple promptvm-managed personas") {
 		t.Errorf("expected multiple-managed-persona error, got %v", err)
 	}
+	// Nothing rewritten.
+	afterA, _ := os.ReadFile(filepath.Join(pack, "agents", "a.persona.md"))
+	afterB, _ := os.ReadFile(filepath.Join(pack, "agents", "b.persona.md"))
+	if string(beforeA) != string(afterA) || string(beforeB) != string(afterB) {
+		t.Error("personas must be byte-unchanged when ambiguous")
+	}
+}
+
+func TestBuzzPackContainmentSymlinks(t *testing.T) { // AC11
+	// A symlinked skills/ dir pointing outside the pack is rejected.
+	t.Run("symlinked skills dir", func(t *testing.T) {
+		base := t.TempDir()
+		pack := filepath.Join(base, "p")
+		outside := filepath.Join(base, "outside")
+		must(t, os.MkdirAll(outside, 0o755))
+		must(t, os.MkdirAll(pack, 0o755))
+		if err := os.Symlink(outside, filepath.Join(pack, "skills")); err != nil {
+			t.Skipf("symlink unsupported: %v", err)
+		}
+		fixtures := map[string]resolveFixture{}
+		srv, _ := fakeServer(t, fixtures)
+		fixtures["found"] = skillFixture(srv.URL)
+		_, err := runAddRaw(t, srv.URL, "--buzz-pack", pack, "found")
+		if err == nil {
+			t.Error("expected rejection for symlinked skills dir")
+		}
+		if _, e := os.Stat(filepath.Join(outside, "found", "SKILL.md")); e == nil {
+			t.Error("wrote through the skills symlink outside the pack")
+		}
+	})
+	// A symlinked agents/ dir on a pre-existing pack is rejected during regen.
+	t.Run("symlinked agents dir", func(t *testing.T) {
+		base := t.TempDir()
+		pack := filepath.Join(base, "p")
+		outside := filepath.Join(base, "outside")
+		must(t, os.MkdirAll(filepath.Join(pack, ".plugin"), 0o755))
+		must(t, os.MkdirAll(outside, 0o755))
+		must(t, os.WriteFile(filepath.Join(pack, ".plugin", "plugin.json"),
+			[]byte(`{"id":"p","name":"P","version":"0.1.0","personas":["agents/m.persona.md"]}`), 0o644))
+		managed := "---\nname: m\ndescription: d\nskills: []\n---\nbody\n" + buzzManagedSentinelLine + "\n"
+		must(t, os.WriteFile(filepath.Join(outside, "m.persona.md"), []byte(managed), 0o644))
+		if err := os.Symlink(outside, filepath.Join(pack, "agents")); err != nil {
+			t.Skipf("symlink unsupported: %v", err)
+		}
+		fixtures := map[string]resolveFixture{}
+		srv, _ := fakeServer(t, fixtures)
+		fixtures["found"] = skillFixture(srv.URL)
+		_, err := runAddRaw(t, srv.URL, "--buzz-pack", pack, "found")
+		if err == nil {
+			t.Error("expected rejection for symlinked agents dir")
+		}
+		if after, _ := os.ReadFile(filepath.Join(outside, "m.persona.md")); string(after) != managed {
+			t.Error("rewrote a persona through the agents symlink outside the pack")
+		}
+	})
 }
 
 // ─── real-binary oracle (skipped when `buzz` is absent) ──────────────────────
@@ -356,29 +484,61 @@ func TestBuzzPackValidatesWithRealBinary(t *testing.T) {
 	if err != nil {
 		t.Skip("buzz binary not on PATH; skipping validate oracle")
 	}
+	// buzz has no --version; the top-of-help banner carries the build. Log
+	// whatever it prints for traceability of the probed version.
 	if v, verr := exec.Command(bin, "--help").CombinedOutput(); verr == nil {
-		_ = v // presence is enough; version is logged below if available
+		lines := strings.SplitN(string(v), "\n", 2)
+		t.Logf("buzz at %s: %s", bin, strings.TrimSpace(lines[0]))
 	}
-	t.Logf("using buzz at %s", bin)
 
-	pack := filepath.Join(t.TempDir(), "oracle-pack")
 	fixtures := map[string]resolveFixture{}
 	srv, _ := fakeServer(t, fixtures)
 	fixtures["found"] = skillFixture(srv.URL)
+	fixtures["another"] = resolveFixture{kind: "skill", name: "another", content: map[string]interface{}{"raw_skill_md": "---\nname: another\n---\nb"}}
 	fixtures["my-mcp"] = resolveFixture{kind: "mcp", name: "my-mcp", content: map[string]interface{}{
 		"config": map[string]interface{}{"type": "http", "url": "https://x/mcp", "name": "my-mcp"},
 	}}
-	if out, err := runAddRaw(t, srv.URL, "--buzz-pack", pack, "found"); err != nil {
-		t.Fatalf("install skill: %v\n%s", err, out)
+	fixtures["bundle"] = collectionFixture("bundle", "Bundle", nil, []map[string]interface{}{
+		{"kind": "skill", "name": "csk", "content": map[string]interface{}{"raw_skill_md": "---\nname: csk\n---\nb"}},
+		{"kind": "prompt", "name": "cpr", "content": map[string]interface{}{"content": "hi"}},
+	}, nil)
+
+	validate := func(t *testing.T, pack string) {
+		out, err := exec.Command(bin, "pack", "validate", pack).CombinedOutput()
+		if err != nil {
+			t.Fatalf("buzz pack validate %s failed: %v\n%s", pack, err, out)
+		}
+		t.Logf("validate %s: %s", filepath.Base(pack), strings.TrimSpace(string(out)))
 	}
-	if out, err := runAddRaw(t, srv.URL, "--buzz-pack", pack, "my-mcp"); err != nil {
-		t.Fatalf("install mcp: %v\n%s", err, out)
+
+	// AC1+AC2+AC3: scaffold, second skill, mcp — one fresh pack.
+	pack := filepath.Join(t.TempDir(), "fresh")
+	for _, ref := range []string{"found", "another", "my-mcp"} {
+		if out, err := runAddRaw(t, srv.URL, "--buzz-pack", pack, ref); err != nil {
+			t.Fatalf("install %s: %v\n%s", ref, err, out)
+		}
 	}
-	out, err := exec.Command(bin, "pack", "validate", pack).CombinedOutput()
-	if err != nil {
-		t.Fatalf("buzz pack validate failed: %v\n%s", err, out)
+	validate(t, pack)
+
+	// AC4: collection (skill installed, prompt warn-skipped).
+	packC := filepath.Join(t.TempDir(), "coll")
+	if out, err := runAddRaw(t, srv.URL, "--buzz-pack", packC, "bundle"); err != nil {
+		t.Fatalf("install collection: %v\n%s", err, out)
 	}
-	t.Logf("buzz pack validate: %s", out)
+	validate(t, packC)
+
+	// AC5: pre-existing user pack (user manifest + user persona).
+	packP := filepath.Join(t.TempDir(), "pre")
+	must(t, os.MkdirAll(filepath.Join(packP, ".plugin"), 0o755))
+	must(t, os.MkdirAll(filepath.Join(packP, "agents"), 0o755))
+	must(t, os.WriteFile(filepath.Join(packP, ".plugin", "plugin.json"),
+		[]byte(`{"id":"pre","name":"Pre","version":"1.0.0","personas":["agents/u.persona.md"]}`), 0o644))
+	must(t, os.WriteFile(filepath.Join(packP, "agents", "u.persona.md"),
+		[]byte("---\nname: u\ndisplay_name: U\ndescription: user agent\nskills: []\n---\nHand-written.\n"), 0o644))
+	if out, err := runAddRaw(t, srv.URL, "--buzz-pack", packP, "found"); err != nil {
+		t.Fatalf("install into pre-existing: %v\n%s", err, out)
+	}
+	validate(t, packP)
 }
 
 func must(t *testing.T, err error) {

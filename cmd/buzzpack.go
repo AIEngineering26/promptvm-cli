@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -113,11 +114,31 @@ func buzzPackContained(root, target string) error {
 
 // buzzPackRefuseSymlinkedSubdir errors if <root>/<sub> exists and is a symlink,
 // which would let writes/rewrites land outside the pack. Called before touching
-// skills/ and agents/.
+// .plugin/, skills/ and agents/ on every write path (not just scaffold), so a
+// symlinked subdir in a pre-existing pack can't be used to escape.
 func buzzPackRefuseSymlinkedSubdir(root, sub string) error {
 	p := filepath.Join(root, sub)
 	if info, err := os.Lstat(p); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("refusing to write into %q: it is a symlink", p)
+	}
+	return nil
+}
+
+// atomicWriteFile writes data to path via a sibling temp file + rename, matching
+// the durable-write idiom the rest of add_install.go uses (installMCPKind /
+// installSettingsKind). Used for the destructive managed-persona rewrite and the
+// scaffold so a crash never leaves a truncated/partial file.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
 	}
 	return nil
 }
@@ -133,12 +154,14 @@ type buzzPluginManifest struct {
 }
 
 // ensureBuzzPackScaffold makes <root> a valid, functional persona pack when it
-// has no manifest yet: it writes .plugin/plugin.json plus one promptvm-managed
-// persona (a pack with zero personas fails validation, and skills are inert
-// without a persona referencing them). It is idempotent — an existing manifest
-// is left untouched. On --dry-run it prints the planned scaffold and writes
-// nothing.
+// has no manifest yet: it writes one promptvm-managed persona plus
+// .plugin/plugin.json (a pack with zero personas fails validation, and skills
+// are inert without a persona referencing them). It is idempotent — an existing
+// manifest is left untouched. On --dry-run it prints the planned scaffold and
+// writes nothing.
 //
+// The persona is written BEFORE the manifest so that a manifest on disk always
+// implies its persona is present (the idempotency guard keys on the manifest).
 // Guard rails: if the managed persona file already exists but the manifest does
 // not (a half-built pack), it refuses without --force rather than clobber it; an
 // unparseable existing manifest is a hard error (never overwritten).
@@ -154,6 +177,11 @@ func ensureBuzzPackScaffold(cmd *cobra.Command, root string, dryRun, force bool)
 	}
 
 	packName := kebabPackName(filepath.Base(root))
+	if !slugPattern.MatchString(packName) {
+		// Defense in depth: kebabPackName is safe by construction, but never let
+		// a bad id/name reach the manifest (PRD §5.1).
+		return fmt.Errorf("cannot derive a valid pack name from %q", filepath.Base(root))
+	}
 	display := filepath.Base(root)
 	if strings.TrimSpace(display) == "" || display == "." || display == string(os.PathSeparator) {
 		display = packName
@@ -194,25 +222,23 @@ func ensureBuzzPackScaffold(cmd *cobra.Command, root string, dryRun, force bool)
 
 	if dryRun {
 		fmt.Fprintf(cmd.OutOrStdout(), "Dry-run: would scaffold Buzz pack at %s\n", root)
-		fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", manifestPath)
 		fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", personaPath)
+		fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", manifestPath)
 		return nil
 	}
 
 	if err := buzzPackRefuseSymlinkedSubdir(root, "agents"); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
-		return mapWriteError(err, manifestPath)
+	if err := buzzPackRefuseSymlinkedSubdir(root, ".plugin"); err != nil {
+		return err
 	}
-	if err := os.WriteFile(manifestPath, manifestBytes, 0o644); err != nil {
-		return mapWriteError(err, manifestPath)
-	}
-	if err := os.MkdirAll(filepath.Dir(personaPath), 0o755); err != nil {
+	// Persona first, then manifest: a manifest on disk always implies its persona.
+	if err := atomicWriteFile(personaPath, []byte(persona), 0o644); err != nil {
 		return mapWriteError(err, personaPath)
 	}
-	if err := os.WriteFile(personaPath, []byte(persona), 0o644); err != nil {
-		return mapWriteError(err, personaPath)
+	if err := atomicWriteFile(manifestPath, manifestBytes, 0o644); err != nil {
+		return mapWriteError(err, manifestPath)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Scaffolded Buzz pack at %s\n", root)
 	return nil
@@ -221,7 +247,7 @@ func ensureBuzzPackScaffold(cmd *cobra.Command, root string, dryRun, force bool)
 // regenerateManagedPersonaSkills refreshes the promptvm-managed persona's
 // `skills:` frontmatter list after a skill install. It:
 //   - finds the persona whose body carries the buzzManagedSentinel (expects
-//     exactly one; 0 → prints a hint and returns; >1 → error);
+//     exactly one; 0 → prints a hint and returns; >1 → error, nothing rewritten);
 //   - rebuilds the list as the sorted, de-duplicated union of every
 //     skills/<d>/SKILL.md on disk plus any pre-existing entries the user
 //     hand-added that don't live under skills/ (foreign entries are preserved);
@@ -233,6 +259,9 @@ func ensureBuzzPackScaffold(cmd *cobra.Command, root string, dryRun, force bool)
 // justInstalled is the pack-relative path of the skill just added, used only for
 // the no-managed-persona hint.
 func regenerateManagedPersonaSkills(cmd *cobra.Command, root, justInstalled string) error {
+	if err := buzzPackRefuseSymlinkedSubdir(root, "agents"); err != nil {
+		return err
+	}
 	agentsDir := filepath.Join(root, "agents")
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
@@ -271,6 +300,9 @@ func regenerateManagedPersonaSkills(cmd *cobra.Command, root, justInstalled stri
 	if info, err := os.Lstat(personaPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("refusing to rewrite %q: it is a symlink", personaPath)
 	}
+	if err := buzzPackContained(root, personaPath); err != nil {
+		return err
+	}
 
 	data, err := os.ReadFile(personaPath)
 	if err != nil {
@@ -287,7 +319,7 @@ func regenerateManagedPersonaSkills(cmd *cobra.Command, root, justInstalled stri
 	if !changed {
 		return nil
 	}
-	if err := os.WriteFile(personaPath, []byte(updated), 0o644); err != nil {
+	if err := atomicWriteFile(personaPath, []byte(updated), 0o644); err != nil {
 		return mapWriteError(err, personaPath)
 	}
 	return nil
@@ -297,7 +329,7 @@ func regenerateManagedPersonaSkills(cmd *cobra.Command, root, justInstalled stri
 // contains the managed sentinel. It only inspects lines after the closing `---`
 // so a stray match inside frontmatter can't happen.
 func personaHasSentinel(content string) bool {
-	lines := strings.Split(content, "\n")
+	lines := strings.Split(normalizeLF(content), "\n")
 	inFrontmatter := false
 	frontmatterClosed := false
 	for i, ln := range lines {
@@ -343,13 +375,22 @@ func listPackSkillDirs(root string) ([]string, error) {
 	return out, nil
 }
 
+// normalizeLF collapses CRLF to LF so line-based frontmatter parsing is
+// consistent; the original dominant ending is restored on write.
+func normalizeLF(s string) string { return strings.ReplaceAll(s, "\r\n", "\n") }
+
 // spliceSkillsList replaces ONLY the `skills:` block within the frontmatter of a
 // persona file, preserving every other byte. The new list is the sorted,
 // de-duplicated union of skillDirs (from disk) and any existing entries that do
 // NOT live under skills/ (user-added foreign refs are kept, not dropped). Returns
-// the new content and whether it changed. Errors if no frontmatter is found.
+// the new content and whether it changed. Errors if no frontmatter is found. The
+// file's dominant line ending (LF or CRLF) is preserved.
 func spliceSkillsList(content string, skillDirs []string) (string, bool, error) {
-	lines := strings.Split(content, "\n")
+	eol := "\n"
+	if strings.Contains(content, "\r\n") {
+		eol = "\r\n"
+	}
+	lines := strings.Split(normalizeLF(content), "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
 		return content, false, fmt.Errorf("persona has no YAML frontmatter")
 	}
@@ -365,34 +406,44 @@ func spliceSkillsList(content string, skillDirs []string) (string, bool, error) 
 		return content, false, fmt.Errorf("persona frontmatter is not closed")
 	}
 
-	// Find the `skills:` key line within [1, fmEnd) and the extent of its block
-	// (the key line plus any following indented list items / continuations up to
-	// the next top-level key or the frontmatter close).
+	// Find the `skills:` key line within [1, fmEnd) and the extent of its block:
+	// the key line plus every following blank OR indented line (block list items,
+	// blank separators, and any indented continuation), up to the next top-level
+	// key or the frontmatter close.
 	skillsStart, skillsEnd := -1, -1
 	var existing []string
 	for i := 1; i < fmEnd; i++ {
-		if isYAMLKey(lines[i], "skills") {
-			skillsStart = i
-			existing = append(existing, parseInlineList(lines[i])...)
-			j := i + 1
-			for j < fmEnd {
-				lt := lines[j]
-				trimmed := strings.TrimSpace(lt)
-				// A block list item or an indented continuation belongs to skills:.
-				if strings.HasPrefix(trimmed, "- ") {
-					existing = append(existing, strings.TrimSpace(strings.TrimPrefix(trimmed, "-")))
-					j++
-					continue
-				}
-				// Next top-level key (no leading whitespace, has a colon) ends the block.
-				break
-			}
-			skillsEnd = j
-			break
+		if !isYAMLKey(lines[i], "skills") {
+			continue
 		}
+		skillsStart = i
+		existing = append(existing, parseInlineList(lines[i])...)
+		j := i + 1
+		for j < fmEnd {
+			line := lines[j]
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				j++ // blank line within the block
+				continue
+			}
+			if line[0] != ' ' && line[0] != '\t' {
+				break // next top-level key ends the block
+			}
+			// Indented line: a `- item` contributes an entry; any other indented
+			// continuation is consumed (and dropped) so we never emit mixed
+			// sequence/mapping YAML.
+			if item, ok := strings.CutPrefix(trimmed, "-"); ok {
+				if v := unquoteYAML(stripInlineComment(strings.TrimSpace(item))); v != "" {
+					existing = append(existing, v)
+				}
+			}
+			j++
+		}
+		skillsEnd = j
+		break
 	}
 
-	// Preserve foreign entries (anything not under skills/).
+	// Union: disk skills + preserved foreign (non skills/) existing entries.
 	set := map[string]bool{}
 	var union []string
 	add := func(v string) {
@@ -415,37 +466,53 @@ func spliceSkillsList(content string, skillDirs []string) (string, bool, error) 
 
 	block := renderSkillsBlock(union)
 
+	var newLines []string
 	if skillsStart == -1 {
 		// No skills: key present — insert one just before the frontmatter close.
-		newLines := append([]string{}, lines[:fmEnd]...)
+		newLines = append(newLines, lines[:fmEnd]...)
 		newLines = append(newLines, block...)
 		newLines = append(newLines, lines[fmEnd:]...)
-		out := strings.Join(newLines, "\n")
-		return out, out != content, nil
+	} else {
+		newLines = append(newLines, lines[:skillsStart]...)
+		newLines = append(newLines, block...)
+		newLines = append(newLines, lines[skillsEnd:]...)
 	}
-
-	newLines := append([]string{}, lines[:skillsStart]...)
-	newLines = append(newLines, block...)
-	newLines = append(newLines, lines[skillsEnd:]...)
-	out := strings.Join(newLines, "\n")
+	out := strings.Join(newLines, eol)
 	return out, out != content, nil
 }
 
 // renderSkillsBlock renders the frontmatter `skills:` lines. Empty → inline
-// `skills: []`; otherwise a block list with two-space indented `- ` items.
+// `skills: []`; otherwise a block list with two-space indented `- ` items, each
+// YAML-quoted when it contains characters that would otherwise be misparsed.
 func renderSkillsBlock(items []string) []string {
 	if len(items) == 0 {
 		return []string{"skills: []"}
 	}
 	out := []string{"skills:"}
 	for _, it := range items {
-		out = append(out, "  - "+it)
+		out = append(out, "  - "+yamlQuoteIfNeeded(it))
 	}
 	return out
 }
 
+// yamlQuoteIfNeeded double-quotes a scalar that contains YAML-significant
+// characters (so a preserved foreign entry can't produce invalid frontmatter);
+// plain slug/path entries like "skills/foo" pass through unquoted.
+func yamlQuoteIfNeeded(s string) string {
+	if s == "" {
+		return `""`
+	}
+	if strings.ContainsAny(s, ":#[]{}&*!|>'\"%@`,") ||
+		strings.HasPrefix(s, " ") || strings.HasSuffix(s, " ") ||
+		strings.HasPrefix(s, "-") {
+		return strconv.Quote(s)
+	}
+	return s
+}
+
 // isYAMLKey reports whether line is a top-level (unindented) YAML mapping for
-// key, i.e. `key:` or `key: …`.
+// key, i.e. `key:` or `key: …` (guarding against a prefix collision like
+// `skills-foo:`).
 func isYAMLKey(line, key string) bool {
 	if line != strings.TrimLeft(line, " \t") {
 		return false // indented — not a top-level key
@@ -458,25 +525,50 @@ func isYAMLKey(line, key string) bool {
 }
 
 // parseInlineList extracts entries from an inline flow list on a `skills:` line
-// (`skills: [a, b]`). Returns nil for block form (`skills:`) or empty (`[]`).
+// (`skills: [a, b]`, tolerating a trailing `# comment` and quoted items). Returns
+// nil for block form (`skills:`) or empty (`[]`).
 func parseInlineList(line string) []string {
 	_, after, ok := strings.Cut(line, ":")
 	if !ok {
 		return nil
 	}
-	after = strings.TrimSpace(after)
-	if !strings.HasPrefix(after, "[") || !strings.HasSuffix(after, "]") {
-		return nil
+	l := strings.Index(after, "[")
+	r := strings.LastIndex(after, "]")
+	if l < 0 || r < l {
+		return nil // block form or no flow list (trailing content after ] ignored)
 	}
-	inner := strings.TrimSpace(after[1 : len(after)-1])
+	inner := strings.TrimSpace(after[l+1 : r])
 	if inner == "" {
 		return nil
 	}
 	var out []string
 	for _, p := range strings.Split(inner, ",") {
-		if v := strings.TrimSpace(p); v != "" {
+		if v := unquoteYAML(strings.TrimSpace(p)); v != "" {
 			out = append(out, v)
 		}
 	}
 	return out
+}
+
+// stripInlineComment removes a trailing YAML `# comment` (a `#` at the start or
+// preceded by whitespace); a line that is only a comment yields "".
+func stripInlineComment(s string) string {
+	if strings.HasPrefix(s, "#") {
+		return ""
+	}
+	if i := strings.Index(s, " #"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// unquoteYAML strips a single matching pair of single/double quotes from a scalar.
+func unquoteYAML(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 {
+		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
 }
