@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"text/tabwriter"
 
+	"github.com/AIEngineering26/promptvm-cli/internal/api"
 	"github.com/AIEngineering26/promptvm-cli/internal/client"
 	promptvmgosdk "github.com/AIEngineering26/promptvm-go-sdk"
+	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
 	"github.com/manifoldco/promptui"
 	"github.com/spf13/cobra"
 )
@@ -231,7 +234,7 @@ func runDirsGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	resp, err := c.Directories.ListDirectories(cmd.Context(), &promptvmgosdk.ListDirectoriesRequest{
+	dirsResp, err := c.Directories.ListDirectories(cmd.Context(), &promptvmgosdk.ListDirectoriesRequest{
 		WorkspaceID: dirsGetWorkspace,
 	})
 	if err != nil {
@@ -239,18 +242,32 @@ func runDirsGet(cmd *cobra.Command, args []string) error {
 	}
 
 	var match *promptvmgosdk.ListDirectoriesResponseDataItem
-	children := 0
-	for _, d := range resp.GetData() {
+	subDirs := 0
+	for _, d := range dirsResp.GetData() {
 		if d.ID == args[0] {
 			match = d
 		}
 		if d.ParentID != nil && *d.ParentID == args[0] {
-			children++
+			subDirs++
 		}
 	}
 	if match == nil {
 		return fmt.Errorf("directory %s not found in workspace %s", args[0], dirsGetWorkspace)
 	}
+
+	// Count non-directory children (prompts, skills, hooks, resources) whose
+	// directoryId matches. Without this, `directories get` reports Children: 0
+	// even after uploads succeed — misleading because the linkage IS working;
+	// only child directories were being counted.
+	caller, err := api.NewFromContext(cmd)
+	if err != nil {
+		return err
+	}
+	counts, err := countDirectoryChildren(cmd, c, caller, dirsGetWorkspace, args[0])
+	if err != nil {
+		return err
+	}
+	total := subDirs + counts.prompts + counts.skills + counts.hooks + counts.resources
 
 	parent := "(root)"
 	if match.ParentID != nil {
@@ -261,9 +278,121 @@ func runDirsGet(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "Slug:      %s\n", match.Slug)
 	fmt.Fprintf(cmd.OutOrStdout(), "Workspace: %s\n", dirsGetWorkspace)
 	fmt.Fprintf(cmd.OutOrStdout(), "Parent:    %s\n", parent)
-	fmt.Fprintf(cmd.OutOrStdout(), "Children:  %d\n", children)
+	fmt.Fprintf(cmd.OutOrStdout(), "Children:  %d (dirs: %d, prompts: %d, skills: %d, hooks: %d, resources: %d)\n",
+		total, subDirs, counts.prompts, counts.skills, counts.hooks, counts.resources)
 	fmt.Fprintf(cmd.OutOrStdout(), "Updated:   %s\n", match.UpdatedAt.Format("2006-01-02 15:04"))
 	return nil
+}
+
+type dirChildCounts struct {
+	prompts   int
+	skills    int
+	hooks     int
+	resources int
+}
+
+// countDirectoryChildren returns the number of prompts, skills, hooks, and
+// resources whose directoryId matches dirID. Each list endpoint is paginated
+// via cursor so a single directory with >100 items is counted correctly.
+// Hooks go through the raw HTTP caller because the pinned Go SDK doesn't yet
+// expose a Hooks client.
+func countDirectoryChildren(cmd *cobra.Command, c *sdkclient.Client, caller *api.Caller, workspaceID, dirID string) (dirChildCounts, error) {
+	var out dirChildCounts
+	ctx := cmd.Context()
+	limit := "100"
+
+	// Prompts
+	var pCursor *string
+	for {
+		req := &promptvmgosdk.ListPromptsRequest{WorkspaceID: workspaceID, Limit: &limit}
+		if pCursor != nil {
+			req.Cursor = pCursor
+		}
+		resp, err := c.Prompts.ListPrompts(ctx, req)
+		if err != nil {
+			return out, fmt.Errorf("listing prompts: %w", err)
+		}
+		for _, p := range resp.GetData() {
+			if p.DirectoryID != nil && *p.DirectoryID == dirID {
+				out.prompts++
+			}
+		}
+		pg := resp.GetPagination()
+		if pg == nil || !pg.GetHasMore() || pg.GetCursor() == nil {
+			break
+		}
+		pCursor = pg.GetCursor()
+	}
+
+	// Skills
+	var sCursor *string
+	for {
+		req := &promptvmgosdk.ListSkillsRequest{WorkspaceID: workspaceID, Limit: &limit}
+		if sCursor != nil {
+			req.Cursor = sCursor
+		}
+		resp, err := c.Skills.ListSkills(ctx, req)
+		if err != nil {
+			return out, fmt.Errorf("listing skills: %w", err)
+		}
+		for _, s := range resp.GetData() {
+			if s.DirectoryID != nil && *s.DirectoryID == dirID {
+				out.skills++
+			}
+		}
+		pg := resp.GetPagination()
+		if pg == nil || !pg.GetHasMore() || pg.GetCursor() == nil {
+			break
+		}
+		sCursor = pg.GetCursor()
+	}
+
+	// Hooks — raw HTTP, the pinned SDK lacks a Hooks client.
+	hCursor := ""
+	for {
+		params := url.Values{}
+		params.Set("workspaceId", workspaceID)
+		params.Set("limit", limit)
+		if hCursor != "" {
+			params.Set("cursor", hCursor)
+		}
+		var resp struct {
+			Data []struct {
+				DirectoryID *string `json:"directoryId"`
+			} `json:"data"`
+			Pagination struct {
+				Cursor  string `json:"cursor"`
+				HasMore bool   `json:"hasMore"`
+			} `json:"pagination"`
+		}
+		if err := caller.Get("/api/v1/hooks?"+params.Encode(), &resp); err != nil {
+			return out, fmt.Errorf("listing hooks: %w", err)
+		}
+		for _, h := range resp.Data {
+			if h.DirectoryID != nil && *h.DirectoryID == dirID {
+				out.hooks++
+			}
+		}
+		if !resp.Pagination.HasMore || resp.Pagination.Cursor == "" {
+			break
+		}
+		hCursor = resp.Pagination.Cursor
+	}
+
+	// Resources (workspace listing — bundled skill files already hidden by the backend)
+	resResp, err := c.Resources.ListWorkspaceResources(ctx, &promptvmgosdk.ListWorkspaceResourcesRequest{
+		WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return out, fmt.Errorf("listing resources: %w", err)
+	}
+	for _, r := range resResp.GetData() {
+		if r.DirectoryID != nil && *r.DirectoryID == dirID {
+			out.resources++
+		}
+	}
+
+	return out, nil
 }
 
 func runDirsUpdate(cmd *cobra.Command, args []string) error {
