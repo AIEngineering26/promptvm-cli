@@ -74,8 +74,7 @@ func newWsCleanupOrphansCmd() *cobra.Command {
 			max, _ := cmd.Flags().GetInt("max")
 			if len(resp.Data) > max {
 				return fmt.Errorf(
-					"refusing to proceed: found %d orphan resources, above --max=%d.\n"+
-						"Re-run with --max %d after reviewing the dry-run list.",
+					"refusing to proceed: found %d orphan resources, above --max=%d — re-run with --max %d after reviewing the dry-run list",
 					len(resp.Data), max, len(resp.Data))
 			}
 
