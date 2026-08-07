@@ -1158,3 +1158,166 @@ func TestAddSettingsReinstallNoNoise(t *testing.T) {
 		t.Errorf("re-install of identical settings should not print conflict noise: %s", out)
 	}
 }
+
+// ─── --target export adapters ────────────────────────────────────────────────
+
+// TestAddTargetUnknownErrors verifies an unknown --target value fails fast with
+// the list of valid targets and writes nothing.
+func TestAddTargetUnknownErrors(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"my-prompt": {kind: "prompt", name: "my-prompt", content: map[string]interface{}{"content": "body"}},
+	}
+	srv, _ := fakeServer(t, fixtures)
+	out, err := runAdd(t, srv, dir, "my-prompt", "--target", "emacs")
+	if err == nil {
+		t.Fatalf("expected error for unknown target, got nil\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "cursor") || !strings.Contains(err.Error(), "codex") || !strings.Contains(err.Error(), "windsurf") {
+		t.Errorf("error should list valid targets, got: %v", err)
+	}
+}
+
+// TestAddEmptyTargetUsesDefaultInstaller is the regression guard: no --target
+// installs exactly as before (Claude Code layout, byte-identical body).
+func TestAddEmptyTargetUsesDefaultInstaller(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"my-prompt": {kind: "prompt", name: "my-prompt", content: map[string]interface{}{"content": "you are helpful"}},
+	}
+	srv, _ := fakeServer(t, fixtures)
+	if _, err := runAdd(t, srv, dir, "my-prompt"); err != nil {
+		t.Fatalf("default install: %v", err)
+	}
+	// Default Claude Code path is unchanged.
+	md, err := os.ReadFile(filepath.Join(dir, "prompts", "my-prompt.md"))
+	if err != nil || string(md) != "you are helpful" {
+		t.Errorf("default installer changed: %v %q", err, md)
+	}
+	// No export artifacts leaked into the tree.
+	if _, err := os.Stat(filepath.Join(dir, ".cursor")); !os.IsNotExist(err) {
+		t.Error("empty target should not write .cursor/")
+	}
+}
+
+// TestAddTargetCursorWritesMDC verifies --target cursor writes a valid .mdc rule
+// (frontmatter + body) at .cursor/rules/<name>.mdc under the export root.
+func TestAddTargetCursorWritesMDC(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{}
+	srv, _ := fakeServer(t, fixtures)
+	fixtures["found"] = resolveFixture{
+		kind: "skill",
+		name: "found",
+		content: map[string]interface{}{
+			"raw_skill_md": "---\nname: found\ndescription: A test skill\n---\nSkill body here.\n",
+			"files": []map[string]interface{}{
+				{"path": "a.txt", "downloadUrl": srv.URL + "/dl", "sizeBytes": 5},
+			},
+		},
+	}
+	out, err := runAdd(t, srv, dir, "found", "--target", "cursor")
+	if err != nil {
+		t.Fatalf("add --target cursor: %v\n%s", err, out)
+	}
+	mdc, err := os.ReadFile(filepath.Join(dir, ".cursor", "rules", "found.mdc"))
+	if err != nil {
+		t.Fatalf("mdc not written: %v", err)
+	}
+	want := "---\ndescription: A test skill\nglobs: \nalwaysApply: false\n---\nSkill body here.\n"
+	if string(mdc) != want {
+		t.Errorf("mdc mismatch:\n--- got ---\n%q\n--- want ---\n%q", mdc, want)
+	}
+	// Bundled file landed under the per-rule subdirectory, fetched from /dl.
+	bundled, err := os.ReadFile(filepath.Join(dir, ".cursor", "rules", "found", "a.txt"))
+	if err != nil || string(bundled) != "hello" {
+		t.Errorf("bundled file = %q %v", bundled, err)
+	}
+}
+
+// TestAddTargetCodexAppendsAgentsMD verifies --target codex appends a section to
+// AGENTS.md at the export root, creating it if absent and appending if present.
+func TestAddTargetCodexAppendsAgentsMD(t *testing.T) {
+	dir := t.TempDir()
+	// Pre-existing AGENTS.md with prior content — the section must be appended.
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# Existing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fixtures := map[string]resolveFixture{
+		"my-prompt": {kind: "prompt", name: "my-prompt", content: map[string]interface{}{"content": "Do the thing."}},
+	}
+	srv, _ := fakeServer(t, fixtures)
+	if _, err := runAdd(t, srv, dir, "my-prompt", "--target", "codex"); err != nil {
+		t.Fatalf("add --target codex: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# Existing\n\n## my-prompt\n\nDo the thing.\n"
+	if string(got) != want {
+		t.Errorf("AGENTS.md mismatch:\n--- got ---\n%q\n--- want ---\n%q", got, want)
+	}
+}
+
+// TestAddTargetWindsurfWritesRule verifies --target windsurf writes
+// .windsurf/rules/<name>.md with frontmatter.
+func TestAddTargetWindsurfWritesRule(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"found": {kind: "skill", name: "found", content: map[string]interface{}{
+			"raw_skill_md": "---\nname: found\ndescription: WS skill\n---\nBody.\n",
+		}},
+	}
+	srv, _ := fakeServer(t, fixtures)
+	if _, err := runAdd(t, srv, dir, "found", "--target", "windsurf"); err != nil {
+		t.Fatalf("add --target windsurf: %v", err)
+	}
+	md, err := os.ReadFile(filepath.Join(dir, ".windsurf", "rules", "found.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "---\ntrigger: model_decision\ndescription: WS skill\n---\nBody.\n"
+	if string(md) != want {
+		t.Errorf("windsurf rule mismatch:\n--- got ---\n%q\n--- want ---\n%q", md, want)
+	}
+}
+
+// TestAddTargetDryRunWritesNothing verifies --target with --dry-run previews the
+// path but writes nothing.
+func TestAddTargetDryRunWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"my-prompt": {kind: "prompt", name: "my-prompt", content: map[string]interface{}{"content": "body"}},
+	}
+	srv, _ := fakeServer(t, fixtures)
+	out, err := runAdd(t, srv, dir, "my-prompt", "--target", "cursor", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if !strings.Contains(out, ".cursor/rules/my-prompt.mdc") {
+		t.Errorf("dry-run should preview the path, got: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".cursor")); !os.IsNotExist(err) {
+		t.Error("dry-run must not write anything")
+	}
+}
+
+// TestAddTargetRejectsNonExportableKind verifies a kind with no rules analogue
+// (e.g. hook) is rejected under --target rather than mis-written.
+func TestAddTargetRejectsNonExportableKind(t *testing.T) {
+	dir := t.TempDir()
+	fixtures := map[string]resolveFixture{
+		"my-hook": {kind: "hook", name: "my-hook", content: map[string]interface{}{
+			"config": map[string]interface{}{"PreToolUse": []interface{}{}},
+		}},
+	}
+	srv, _ := fakeServer(t, fixtures)
+	_, err := runAdd(t, srv, dir, "my-hook", "--target", "cursor")
+	if err == nil {
+		t.Fatal("expected error exporting a hook to a target")
+	}
+	if !strings.Contains(err.Error(), "skill and prompt") {
+		t.Errorf("error should explain only skill/prompt are exportable, got: %v", err)
+	}
+}

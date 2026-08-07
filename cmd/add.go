@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/AIEngineering26/promptvm-cli/internal/api"
+	"github.com/AIEngineering26/promptvm-cli/internal/export"
 	"github.com/AIEngineering26/promptvm-cli/internal/installs"
 	"github.com/AIEngineering26/promptvm-cli/internal/prompt"
+	"github.com/AIEngineering26/promptvm-cli/internal/skills"
 	isatty "github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -113,6 +115,7 @@ func newAddCmd() *cobra.Command {
 		baseDir  string
 		stdout   bool
 		buzzPack string
+		target   string
 	)
 
 	cmd := &cobra.Command{
@@ -189,6 +192,23 @@ func newAddCmd() *cobra.Command {
 				stdout:   stdout,
 				buzzPack: buzzPackRoot,
 			}
+
+			// --target routes skill/prompt content to a non-Claude tool's native
+			// rules format instead of the default Claude Code installer. An empty
+			// --target leaves the install path byte-identical to before.
+			if strings.TrimSpace(target) != "" {
+				if cmd.Flags().Changed("buzz-pack") {
+					return errors.New("--target cannot be combined with --buzz-pack") //nolint:staticcheck // PRD-mandated user-facing message
+				}
+				if err := dispatchExport(cmd, resp, opts, target); err != nil {
+					return err
+				}
+				if !dryRun {
+					fireInstallCounter(cmd, caller, canonicalRef(resp, ref))
+				}
+				return nil
+			}
+
 			if err := dispatchInstall(cmd, resp, opts); err != nil {
 				return err
 			}
@@ -214,6 +234,7 @@ func newAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&scope, "scope", "user", "Install scope: user (~/.claude) or project (./.claude)")
 	cmd.Flags().BoolVar(&stdout, "stdout", false, "For prompt kind: print the body to stdout instead of writing a file")
 	cmd.Flags().StringVar(&buzzPack, "buzz-pack", "", "Install skill/mcp/collection content into a Buzz persona pack at this directory")
+	cmd.Flags().StringVar(&target, "target", "", "Export a skill/prompt to another tool's rules format instead of Claude Code (cursor|codex|windsurf)")
 	// Hidden override for tests; defaults to the resolved scope root's .claude dir.
 	cmd.Flags().StringVar(&baseDir, "skills-dir", "", "Override the install root (.claude) directory (advanced/testing)")
 	_ = cmd.Flags().MarkHidden("skills-dir")
@@ -486,6 +507,141 @@ func installName(resp resolveResponse) (string, error) {
 		return "", fmt.Errorf("the marketplace returned an unsafe name %q for this item", resp.Name)
 	}
 	return name, nil
+}
+
+// dispatchExport writes a resolved skill/prompt into a non-Claude tool's rules
+// format (--target). Only skill and prompt kinds are exportable — every other
+// kind (agent/command/hook/settings/mcp/collection) has no rules-file analogue
+// in the target tools, so it is rejected with a clear message rather than
+// silently written to the wrong place.
+func dispatchExport(cmd *cobra.Command, resp resolveResponse, opts installOptions, targetName string) error {
+	tgt, err := export.Lookup(targetName)
+	if err != nil {
+		return err
+	}
+
+	name, err := installName(resp)
+	if err != nil {
+		return err
+	}
+
+	var bundle export.Bundle
+	switch resp.Kind {
+	case "skill":
+		var d skillDetail
+		if err := json.Unmarshal(resp.Content, &d); err != nil {
+			return fmt.Errorf("Skill %q returned malformed content: %s", name, err) //nolint:staticcheck // PRD-mandated user-facing message
+		}
+		if d.RawSkillMD == "" {
+			return fmt.Errorf("Skill %q returned no content", name) //nolint:staticcheck // PRD-mandated user-facing message
+		}
+		fm, _ := skills.ParseFrontmatter([]byte(d.RawSkillMD))
+		desc := ""
+		if fm != nil {
+			desc = fm.Description
+		}
+		files := make([]export.BundleFile, 0, len(d.Files))
+		for _, f := range d.Files {
+			files = append(files, export.BundleFile{Path: f.Path, DownloadURL: f.DownloadURL, SizeBytes: f.SizeBytes})
+		}
+		bundle = export.Bundle{
+			Name:        name,
+			Description: desc,
+			Body:        export.StripFrontmatter(d.RawSkillMD),
+			Files:       files,
+		}
+	case "prompt":
+		var raw struct {
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(resp.Content, &raw); err != nil {
+			return fmt.Errorf("Prompt %q returned malformed content: %s", name, err) //nolint:staticcheck // PRD-mandated user-facing message
+		}
+		if raw.Content == "" {
+			return fmt.Errorf("Prompt %q returned no content", name) //nolint:staticcheck // PRD-mandated user-facing message
+		}
+		bundle = export.Bundle{Name: name, Body: raw.Content}
+	default:
+		return fmt.Errorf("--target %s supports skill and prompt content only, not %q", targetName, resp.Kind) //nolint:staticcheck // PRD-mandated user-facing message
+	}
+
+	writes, err := tgt.Transform(bundle)
+	if err != nil {
+		return err
+	}
+
+	// The export root is the project directory. The tool rule dirs (.cursor/,
+	// .windsurf/) and Codex's AGENTS.md live at the project root, NOT under
+	// ~/.claude — so unlike the Claude installer we anchor at the working
+	// directory. An explicit --skills-dir override (tests / advanced use) is
+	// treated as the export root directly.
+	claudeRoot, err := resolveClaudeRoot(opts.scope, opts.baseDir)
+	if err != nil {
+		return err
+	}
+	exportRoot := "."
+	if opts.baseDir != "" {
+		exportRoot = opts.baseDir
+	}
+
+	if opts.dryRun {
+		fmt.Fprintf(cmd.OutOrStdout(), "Dry-run: would export %s %q to %s\n", resp.Kind, name, targetName)
+		for _, w := range writes {
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", filepath.Join(exportRoot, filepath.FromSlash(w.RelPath)))
+		}
+		return nil
+	}
+
+	// Collision guard on the primary rule file (the first write). Append targets
+	// (Codex AGENTS.md) are additive and never collide.
+	primary := filepath.Join(exportRoot, filepath.FromSlash(writes[0].RelPath))
+	if !writes[0].Append {
+		if _, statErr := os.Stat(primary); statErr == nil {
+			ok, decideErr := decideOverwrite(cmd, name, resp.Kind, opts.force)
+			if decideErr != nil {
+				return decideErr
+			}
+			if !ok {
+				return errInstallCancelled
+			}
+		}
+	}
+
+	written := 0
+	for _, w := range writes {
+		dest := filepath.Join(exportRoot, filepath.FromSlash(w.RelPath))
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return mapWriteError(err, dest)
+		}
+		switch {
+		case w.DownloadURL != "":
+			if err := downloadToFile(cmd, w.DownloadURL, dest); err != nil {
+				return mapWriteError(err, dest)
+			}
+		case w.Append:
+			f, ferr := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+			if ferr != nil {
+				return mapWriteError(ferr, dest)
+			}
+			if _, werr := f.Write(w.Content); werr != nil {
+				f.Close()
+				return mapWriteError(werr, dest)
+			}
+			if cerr := f.Close(); cerr != nil {
+				return mapWriteError(cerr, dest)
+			}
+		default:
+			if err := os.WriteFile(dest, w.Content, 0o644); err != nil {
+				return mapWriteError(err, dest)
+			}
+		}
+		written++
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Exported %s %q to %s (%s)\n",
+		resp.Kind, name, targetName, filepath.Join(exportRoot, filepath.FromSlash(tgt.Path(name))))
+	recordInstall(cmd, claudeRoot, resp, canonicalRef(resp, name), primary)
+	return nil
 }
 
 func init() {
