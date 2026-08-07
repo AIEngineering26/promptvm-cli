@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"github.com/AIEngineering26/promptvm-cli/internal/client"
 	"github.com/AIEngineering26/promptvm-cli/internal/output"
 	"github.com/AIEngineering26/promptvm-cli/internal/skills"
+	promptvmgosdk "github.com/AIEngineering26/promptvm-go-sdk"
+	sdkclient "github.com/AIEngineering26/promptvm-go-sdk/client"
 	"github.com/spf13/cobra"
 )
 
@@ -89,8 +92,12 @@ func newSkillsUploadCmd() *cobra.Command {
 				return err
 			}
 
-			// Upload bundled files as resources (presigned-URL flow).
+			// Upload bundled files as resources (presigned-URL flow). Track
+			// each successfully-uploaded resource so we can roll back on
+			// failure — a failed skill POST would otherwise leave the
+			// resources orphaned as loose files in the workspace root.
 			manifest := make([]skillFileEntry, 0, len(bundled))
+			uploadedResourceIDs := make([]string, 0, len(bundled))
 			for i, f := range bundled {
 				if output.Format(cmd) == "table" {
 					fmt.Fprintf(cmd.OutOrStdout(), "Uploading file %d/%d: %s (%s)\n",
@@ -98,9 +105,11 @@ func newSkillsUploadCmd() *cobra.Command {
 				}
 				resID, _, err := uploadFileResource(cmd, c, wsID, f.AbsPath, f.Path)
 				if err != nil {
+					rollbackOrphanResources(cmd, c, uploadedResourceIDs)
 					return fmt.Errorf("upload %s: %w", f.Path, err)
 				}
 				manifest = append(manifest, skillFileEntry{Path: f.Path, ResourceID: resID})
+				uploadedResourceIDs = append(uploadedResourceIDs, resID)
 			}
 
 			body := skillsCreateBody{
@@ -119,6 +128,7 @@ func newSkillsUploadCmd() *cobra.Command {
 
 			var resp skillResponse
 			if err := caller.Post("/api/v1/skills", body, &resp); err != nil {
+				rollbackOrphanResources(cmd, c, uploadedResourceIDs)
 				return err
 			}
 
@@ -143,6 +153,30 @@ func newSkillsUploadCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tags, "tags", "", "Comma-separated tags")
 
 	return cmd
+}
+
+// rollbackOrphanResources best-effort deletes resources that were uploaded
+// as would-be skill bundled files before the skill create failed. Without
+// this, the resources linger in the workspace root as loose files (the
+// backend's "hide skill-bundled resources" filter only excludes resources
+// that got bound to a skill's current version). We log per-resource failures
+// but do not surface them — the caller already has the underlying skill
+// creation error, which is the meaningful signal.
+func rollbackOrphanResources(cmd *cobra.Command, c *sdkclient.Client, resourceIDs []string) {
+	if len(resourceIDs) == 0 {
+		return
+	}
+	ctx := context.Background()
+	if output.Format(cmd) == "table" {
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"Skill upload failed after uploading %d file(s); rolling back to keep the workspace clean.\n",
+			len(resourceIDs))
+	}
+	for _, id := range resourceIDs {
+		if err := c.Resources.DeleteResource(ctx, &promptvmgosdk.DeleteResourceRequest{ResourceID: id}); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  rollback: could not delete resource %s: %v\n", id, err)
+		}
+	}
 }
 
 func init() {
