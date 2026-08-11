@@ -175,6 +175,7 @@ func newResUploadCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&promptID, "prompt", "", "Attach to prompt")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "Target workspace")
+	cmd.Flags().String("content-type", "", "Override the MIME content type (e.g. text/markdown); inferred from the file extension when omitted")
 	return cmd
 }
 
@@ -187,6 +188,39 @@ func uploadSingleFile(cmd *cobra.Command, c *sdkclient.Client, wsID, filePath st
 		fmt.Fprintf(cmd.OutOrStdout(), "Uploaded resource %s (%s)\n", resID, resHumanBytes(size))
 	}
 	return resID, size, nil
+}
+
+// fallbackContentTypes maps file extensions to MIME types for common text and
+// document formats that Go's mime.TypeByExtension can miss. On macOS the Unix
+// source it reads (/etc/apache2/mime.types) has text/markdown commented out, so
+// a .md file resolves to "" and previously fell back to application/octet-stream
+// — which the backend upload allowlist (isAllowedContentType) rejects, breaking
+// markdown uploads.
+var fallbackContentTypes = map[string]string{
+	".md":       "text/markdown",
+	".markdown": "text/markdown",
+	".txt":      "text/plain",
+	".csv":      "text/csv",
+	".yaml":     "text/yaml",
+	".yml":      "text/yaml",
+	".rst":      "text/x-rst",
+	".log":      "text/plain",
+}
+
+// resolveContentType picks the MIME type for an upload: an explicit override
+// wins, then the OS mime table, then the fallback map above, and finally
+// application/octet-stream.
+func resolveContentType(name, override string) string {
+	if override != "" {
+		return override
+	}
+	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
+		return ct
+	}
+	if ct, ok := fallbackContentTypes[strings.ToLower(filepath.Ext(name))]; ok {
+		return ct
+	}
+	return "application/octet-stream"
 }
 
 // uploadFileResource runs the three-step resource upload flow (initiate →
@@ -202,10 +236,8 @@ func uploadFileResource(cmd *cobra.Command, c *sdkclient.Client, wsID, filePath,
 	size := info.Size()
 	name := displayName
 
-	contentType := mime.TypeByExtension(filepath.Ext(name))
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
+	override, _ := cmd.Flags().GetString("content-type")
+	contentType := resolveContentType(name, override)
 
 	// 1. Initiate upload — get presigned URL
 	initResp, err := c.Resources.InitiateResourceUpload(cmd.Context(), &sdk.InitiateResourceUploadRequest{

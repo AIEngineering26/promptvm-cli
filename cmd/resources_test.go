@@ -50,3 +50,23 @@ func TestTruncate(t *testing.T) {
 		t.Errorf("truncate long = %q", got)
 	}
 }
+
+func TestResolveContentType(t *testing.T) {
+	cases := []struct {
+		name     string
+		file     string
+		override string
+		want     string
+	}{
+		{"markdown fallback", "doc.md", "", "text/markdown"},
+		{"markdown long ext", "doc.markdown", "", "text/markdown"},
+		{"case-insensitive ext", "README.MD", "", "text/markdown"},
+		{"override wins over inference", "doc.md", "application/pdf", "application/pdf"},
+		{"unknown ext falls back to octet-stream", "blob.zzz", "", "application/octet-stream"},
+	}
+	for _, tc := range cases {
+		if got := resolveContentType(tc.file, tc.override); got != tc.want {
+			t.Errorf("%s: resolveContentType(%q, %q) = %q, want %q", tc.name, tc.file, tc.override, got, tc.want)
+		}
+	}
+}
