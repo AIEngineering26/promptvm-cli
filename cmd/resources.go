@@ -209,18 +209,26 @@ var fallbackContentTypes = map[string]string{
 
 // resolveContentType picks the MIME type for an upload: an explicit override
 // wins, then the OS mime table, then the fallback map above, and finally
-// application/octet-stream.
+// application/octet-stream. The result is reduced to its base media type
+// (parameters like "; charset=utf-8" are dropped) so the claimed type is
+// deterministic across platforms — mime.TypeByExtension adds a charset on some
+// hosts but not others — and matches what the backend stores (it normalizes on
+// ';').
 func resolveContentType(name, override string) string {
-	if override != "" {
-		return override
+	ct := override
+	if ct == "" {
+		ct = mime.TypeByExtension(filepath.Ext(name))
 	}
-	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
-		return ct
+	if ct == "" {
+		ct = fallbackContentTypes[strings.ToLower(filepath.Ext(name))]
 	}
-	if ct, ok := fallbackContentTypes[strings.ToLower(filepath.Ext(name))]; ok {
-		return ct
+	if ct == "" {
+		return "application/octet-stream"
 	}
-	return "application/octet-stream"
+	if base, _, err := mime.ParseMediaType(ct); err == nil {
+		return base
+	}
+	return ct
 }
 
 // uploadFileResource runs the three-step resource upload flow (initiate →

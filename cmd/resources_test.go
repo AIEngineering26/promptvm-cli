@@ -62,6 +62,7 @@ func TestResolveContentType(t *testing.T) {
 		{"markdown long ext", "doc.markdown", "", "text/markdown"},
 		{"case-insensitive ext", "README.MD", "", "text/markdown"},
 		{"override wins over inference", "doc.md", "application/pdf", "application/pdf"},
+		{"strips content-type parameters", "notes.md", "text/markdown; charset=utf-8", "text/markdown"},
 		{"unknown ext falls back to octet-stream", "blob.zzz", "", "application/octet-stream"},
 	}
 	for _, tc := range cases {
