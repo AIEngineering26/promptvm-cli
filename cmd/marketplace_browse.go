@@ -29,6 +29,7 @@ func newBrowseSearchCmd() *cobra.Command {
 		sort     string
 		limit    string
 		page     string
+		model    string
 	)
 
 	cmd := &cobra.Command{
@@ -47,6 +48,9 @@ func newBrowseSearchCmd() *cobra.Command {
 			}
 			if category != "" {
 				req.CategoryID = &category
+			}
+			if model != "" {
+				req.Model = &model
 			}
 			if sort != "" {
 				s := sdk.ListMarketplaceListingsRequestSort(sort)
@@ -86,6 +90,7 @@ func newBrowseSearchCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&category, "category", "", "Filter by category ID")
+	cmd.Flags().StringVar(&model, "model", "", "Only listings recommended for this model (provider/slug)")
 	cmd.Flags().StringVar(&sort, "sort", "", "Sort: popular, newest, top-rated")
 	cmd.Flags().StringVar(&limit, "limit", "", "Results per page")
 	cmd.Flags().StringVar(&page, "page", "", "Page number")

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/AIEngineering26/promptvm-cli/internal/client"
@@ -121,6 +122,8 @@ func newVersionsCreateCmd() *cobra.Command {
 		label   string
 	)
 
+	var models []string
+
 	cmd := &cobra.Command{
 		Use:   "create <prompt-id>",
 		Short: "Create a new version",
@@ -145,6 +148,12 @@ func newVersionsCreateCmd() *cobra.Command {
 			if label != "" {
 				req.VersionLabel = &label
 			}
+			// Omitted, this inherits the previous version's models; --models
+			// replaces them. One call rather than create-then-set, so a failure
+			// cannot leave a version whose models were never applied.
+			if cmd.Flags().Changed("models") {
+				req.ModelIDs = splitModelRefs(models)
+			}
 
 			resp, err := c.PromptVersions.CreatePromptVersion(cmd.Context(), req)
 			if err != nil {
@@ -157,6 +166,15 @@ func newVersionsCreateCmd() *cobra.Command {
 
 			d := resp.GetData()
 			fmt.Fprintf(cmd.OutOrStdout(), "Created version v%d for prompt %s\n", d.GetVersionNumber(), d.GetPromptID())
+			// Echo what the models resolved to — the caller may have named them
+			// by slug, and an omitted flag inherits a set they cannot see.
+			if models := d.GetRecommendedModels(); len(models) > 0 {
+				names := make([]string, 0, len(models))
+				for _, m := range models {
+					names = append(names, m.ProviderSlug+"/"+m.Slug)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Use with:  %s\n", strings.Join(names, ", "))
+			}
 			return nil
 		},
 		Args: cobra.ExactArgs(1),
@@ -166,6 +184,7 @@ func newVersionsCreateCmd() *cobra.Command {
 	cmd.Flags().StringP("file", "f", "", "Read content from file (use - for stdin)")
 	cmd.Flags().StringVarP(&message, "message", "m", "", "Version change note")
 	cmd.Flags().StringVar(&label, "label", "", "Version label")
+	cmd.Flags().StringSliceVar(&models, "models", nil, "Models this version is for, as provider/slug or id (default: inherit the previous version's)")
 
 	return cmd
 }
