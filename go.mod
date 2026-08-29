@@ -3,7 +3,7 @@ module github.com/AIEngineering26/promptvm-cli
 go 1.25.6
 
 require (
-	github.com/AIEngineering26/promptvm-go-sdk v0.0.0-20260516102302-f21f7aa2bdc8
+	github.com/AIEngineering26/promptvm-go-sdk v0.0.0-20260829202613-5bde8b4c5f55
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/huh/spinner v0.0.0-20260223110133-9dc45e34a40b
 	github.com/charmbracelet/lipgloss v1.1.0
