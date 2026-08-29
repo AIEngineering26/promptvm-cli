@@ -43,6 +43,8 @@ func newShareCreateCmd() *cobra.Command {
 		permission string
 		password   string
 		maxUses    int
+		label      string
+		linkType   string
 	)
 
 	cmd := &cobra.Command{
@@ -74,6 +76,16 @@ func newShareCreateCmd() *cobra.Command {
 			if maxUses > 0 {
 				req.MaxUses = &maxUses
 			}
+			if label != "" {
+				req.Label = &label
+			}
+			if linkType != "" {
+				k, err := sdk.NewCreatePromptShareLinkRequestKindFromString(linkType)
+				if err != nil {
+					return fmt.Errorf("invalid --type %q: expected web or agent", linkType)
+				}
+				req.Kind = k.Ptr()
+			}
 
 			resp, err := c.Sharing.CreatePromptShareLink(cmd.Context(), req)
 			if err != nil {
@@ -89,7 +101,21 @@ func newShareCreateCmd() *cobra.Command {
 				return fmt.Errorf("empty response")
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Share link created:")
-			printField(cmd, "URL", d.GetURL())
+			printField(cmd, "Label", deref(d.GetLabel()))
+			printField(cmd, "Type", string(d.GetKind()))
+			// The server mints BOTH urls whatever the type; the type decides
+			// which one is the point of the link, so lead with that one.
+			if u := d.GetURLs(); u != nil {
+				if d.GetKind() == "agent" {
+					printField(cmd, "URL", u.GetAgent())
+					printField(cmd, "Web URL", u.GetWeb())
+				} else {
+					printField(cmd, "URL", u.GetWeb())
+					printField(cmd, "Agent URL", u.GetAgent())
+				}
+			} else {
+				printField(cmd, "URL", d.GetURL())
+			}
 			printField(cmd, "Token", d.GetToken())
 			if d.GetExpiresAt() != nil {
 				printField(cmd, "Expires", output.HumanTime(*d.GetExpiresAt()))
@@ -106,6 +132,10 @@ func newShareCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&permission, "permission", "view", "Permission level: view|edit|comment|execute")
 	cmd.Flags().StringVar(&password, "password", "", "Password-protect the share link")
 	cmd.Flags().IntVar(&maxUses, "max-uses", 0, "Maximum number of uses (0 = unlimited)")
+	cmd.Flags().StringVar(&label, "label", "", "Name for the link, shown in the Sharing Manager (e.g. \"Marketing team review\")")
+	// Not --kind: that already means the prompt kind (template|instance) on
+	// `prompts create`, and two meanings for one flag name is a trap.
+	cmd.Flags().StringVar(&linkType, "type", "", "Link type: web (a public page) or agent (an llms.txt URL for AI agents). Default web")
 	return cmd
 }
 
@@ -144,6 +174,11 @@ func newShareGetCmd() *cobra.Command {
 			// showed blanks, because the server had already stopped sending
 			// them and the SDK was decoding absent JSON into zero values.
 			printField(cmd, "Name", d.GetName())
+			// The link's own label and type, as opposed to the prompt's kind.
+			printField(cmd, "Label", deref(d.GetLabel()))
+			if lk := d.GetLinkKind(); lk != nil {
+				printField(cmd, "Type", string(*lk))
+			}
 			printField(cmd, "Kind", string(d.GetKind()))
 			printField(cmd, "Content Kind", string(d.GetContentKind()))
 			printField(cmd, "Author", deref(d.GetAuthorName()))

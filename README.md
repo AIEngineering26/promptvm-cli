@@ -458,6 +458,11 @@ promptvm prompts versions create pmt_abc123 -f v2.md --models anthropic/claude-o
 # A listing inherits the version's models when first published, then owns them
 promptvm marketplace listings models set lst_123 --models openai/gpt-5.6-terra
 
+`--type web` mints a public share page; `--type agent` mints the `llms.txt` URL
+an AI agent reads. Both URLs are always returned — the type decides which one
+the link is *for*. `--label` is the name shown in the Sharing Manager; the
+server strips HTML and collapses whitespace, so it is safe to paste into.
+
 Model references are `provider/slug` (`promptvm marketplace models` lists them)
 or a model id. Slugs are unique per provider, so the prefix is required — and
 ids are per-environment, so prefer the slug in anything you commit.
@@ -465,6 +470,13 @@ ids are per-environment, so prefer the slug in anything you commit.
 In CI, set models on the **version**, not the listing: version writes accept an
 API key, listing writes need a logged-in session, and a listing inherits its
 version's models when it is first published.
+
+# Share links — name them, type them, list them, revoke them
+promptvm share create pmt_abc123 --label "Marketing team review" --type web
+promptvm share create pmt_abc123 --label "Agent feed" --type agent --expires 24
+promptvm share links list pmt_abc123
+promptvm share links revoke pmt_abc123 lnk_456 --yes
+promptvm share get <token>
 
 promptvm marketplace creator dashboard
 
