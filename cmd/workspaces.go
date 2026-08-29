@@ -237,17 +237,31 @@ func newWsGetCmd() *cobra.Command {
 			}
 
 			d := resp.GetData()
-			printField(cmd, "ID", d["id"])
-			printField(cmd, "Name", d["name"])
-			printField(cmd, "Slug", d["slug"])
-			printField(cmd, "Description", d["description"])
-			printField(cmd, "Visibility", d["visibility"])
-			printField(cmd, "Owner", d["ownerId"])
-			printField(cmd, "Default", d["isDefault"])
+			printField(cmd, "ID", deref(d.GetID()))
+			printField(cmd, "Name", deref(d.GetName()))
+			printField(cmd, "Slug", deref(d.GetSlug()))
+			printField(cmd, "Description", deref(d.GetDescription()))
+			printField(cmd, "Visibility", deref(d.GetVisibility()))
+			printField(cmd, "Owner", deref(d.GetOwnerID()))
+			printField(cmd, "Default", deref(d.GetIsDefault()))
 			return nil
 		},
 	}
 	return cmd
+}
+
+// deref unwraps an optional SDK field for printField.
+//
+// The workspace response used to arrive as map[string]interface{} — the
+// endpoint had no declared schema, so the generator had nothing to model. Now
+// that it is typed, optional fields are pointers, and handing printField a
+// *string would print an address. A nil pointer becomes a nil interface, which
+// printField already skips.
+func deref[T any](p *T) interface{} {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
 
 func printField(cmd *cobra.Command, label string, value interface{}) {

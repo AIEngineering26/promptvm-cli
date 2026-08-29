@@ -137,11 +137,17 @@ func newShareGetCmd() *cobra.Command {
 			if d == nil {
 				return fmt.Errorf("share link not found")
 			}
-			printField(cmd, "Prompt ID", d.GetID())
+			// A share link is a PUBLIC projection: the endpoint deliberately
+			// withholds internal identifiers (prompt id, slug, status,
+			// isPublic, workspace and author ids), pinned by the backend's
+			// "serializes only the public projection" test. Printing them here
+			// showed blanks, because the server had already stopped sending
+			// them and the SDK was decoding absent JSON into zero values.
 			printField(cmd, "Name", d.GetName())
-			printField(cmd, "Status", string(d.GetStatus()))
 			printField(cmd, "Kind", string(d.GetKind()))
-			printField(cmd, "Public", d.GetIsPublic())
+			printField(cmd, "Content Kind", string(d.GetContentKind()))
+			printField(cmd, "Author", deref(d.GetAuthorName()))
+			printField(cmd, "Version", deref(d.GetSharedVersionNumber()))
 			printField(cmd, "Created", output.HumanTime(d.GetCreatedAt()))
 			return nil
 		},

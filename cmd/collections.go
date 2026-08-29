@@ -209,17 +209,13 @@ func runColGet(cmd *cobra.Command, args []string) error {
 		w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "ITEM ID\tFILE ID\tNAME\tTYPE")
 		for _, item := range items {
+			// name/type used to arrive nested under `file`; the API now carries
+			// them on the item itself, and `type` became the `itemType` enum.
 			fileName := ""
-			fileType := ""
-			if f := item.GetFile(); f != nil {
-				if f.Name != nil {
-					fileName = *f.Name
-				}
-				if f.Type != nil {
-					fileType = *f.Type
-				}
+			if n := item.GetName(); n != nil {
+				fileName = *n
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", item.ID, item.FileID, fileName, fileType)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", item.ID, item.FileID, fileName, string(item.GetItemType()))
 		}
 		w.Flush()
 	}
@@ -307,12 +303,10 @@ func runColAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("adding item to collection: %w", err)
 	}
 
+	// This response carries no name — only id, fileId, itemType, note,
+	// position and createdAt — so the item is identified by type and file id.
 	data := resp.GetData()
-	fileName := data.FileID
-	if f := data.GetFile(); f != nil && f.Name != nil {
-		fileName = *f.Name
-	}
-	fmt.Printf("Added %q to collection %s\n", fileName, args[0])
+	fmt.Printf("Added %s %q to collection %s\n", string(data.GetItemType()), data.FileID, args[0])
 	return nil
 }
 
