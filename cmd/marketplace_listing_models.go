@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// "Use with" on a LISTING, which is a different thing from the resource's.
+// Suggested models on a LISTING, which is a different thing from the resource's.
 //
 // A listing inherits the resource version's models when it is first published
 // and owns them from then on: editing the resource afterwards never rewrites

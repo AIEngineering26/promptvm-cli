@@ -12,7 +12,7 @@ import (
 )
 
 // The catalog of models a resource or listing can be recommended for — the
-// "Use with" vocabulary.
+// suggested-models vocabulary.
 //
 // Rows lead with `provider/slug` rather than the id. That is the portable form:
 // model ids are gen_random_uuid() per environment, so a uuid copied out of here
@@ -28,7 +28,7 @@ func newMarketplaceModelsCmd() *cobra.Command {
 		Use:     "models",
 		Aliases: []string{"ai-models"},
 		Short:   "List the models resources can be recommended for",
-		Long: "Lists the active \"Use with\" catalog, grouped by provider.\n\n" +
+		Long: "Lists the active suggested-models catalog, grouped by provider.\n\n" +
 			"The SLUG column is what --models flags and --model filters accept.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := client.NewFromContext(cmd)

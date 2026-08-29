@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// "Use with" from the command line.
+// Suggested models from the command line.
 //
 // The thing worth pinning is the model REFERENCE. Model ids are
 // gen_random_uuid() per environment, so the CLI has to speak provider/slug or a

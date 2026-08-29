@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// "Use with" on a resource — the models a prompt, skill or hook is written for.
+// Suggested models on a resource — the models a prompt, skill or hook is written for.
 //
 // Stored against a VERSION, not the resource, because that is what a
 // marketplace listing pins at publish. These commands default to the current
@@ -24,7 +24,7 @@ var promptsModelsCmd = &cobra.Command{
 	Use:     "models",
 	Aliases: []string{"use-with"},
 	Short:   "Manage the models a resource is recommended for",
-	Long: "Reads and replaces \"Use with\" on a resource's current version.\n\n" +
+	Long: "Reads and replaces suggested models on a resource's current version.\n\n" +
 		"Models are named as provider/slug (see `promptvm marketplace models`)\n" +
 		"or by id. Works for prompts, skills and hooks — all three are versioned\n" +
 		"resources and take the same id.",
@@ -40,7 +40,7 @@ func init() {
 // resolveVersionID turns an explicit --version into itself, or finds the
 // resource's current version.
 //
-// The lookup exists because "Use with" is addressed by version ID and the
+// The lookup exists because suggested models are addressed by version ID and the
 // resource read shapes surface a version NUMBER. Skill and hook responses now
 // carry versionId too, but a prompt id is the one thing every caller has, so
 // resolving from it keeps one code path for all three kinds.

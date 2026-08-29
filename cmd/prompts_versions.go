@@ -173,7 +173,7 @@ func newVersionsCreateCmd() *cobra.Command {
 				for _, m := range models {
 					names = append(names, m.ProviderSlug+"/"+m.Slug)
 				}
-				fmt.Fprintf(cmd.OutOrStdout(), "Use with:  %s\n", strings.Join(names, ", "))
+				fmt.Fprintf(cmd.OutOrStdout(), "Suggested models: %s\n", strings.Join(names, ", "))
 			}
 			return nil
 		},
