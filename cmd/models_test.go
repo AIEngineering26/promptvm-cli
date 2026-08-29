@@ -185,3 +185,32 @@ func TestSplitModelRefs(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateModelRefs(t *testing.T) {
+	// The server enforces the same shape, but answers with a schema violation
+	// carrying the raw regex. A person who typed a bare slug should read a
+	// sentence, not a pattern.
+	for _, ok := range []string{
+		"anthropic/claude-opus-5",
+		"anthropic/claude-opus-4.8",
+		"3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+	} {
+		if err := validateModelRefs([]string{ok}); err != nil {
+			t.Errorf("validateModelRefs(%q) = %v, want nil", ok, err)
+		}
+	}
+
+	err := validateModelRefs([]string{"claude-opus-5"})
+	if err == nil {
+		t.Fatal("a bare slug must be refused — slugs are unique only per provider")
+	}
+	for _, want := range []string{"missing its provider", "provider/slug", "anthropic/claude-opus-5"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message %q lacks %q", err.Error(), want)
+		}
+	}
+
+	if err := validateModelRefs([]string{"/no-provider"}); err == nil {
+		t.Error("an empty provider must be refused")
+	}
+}

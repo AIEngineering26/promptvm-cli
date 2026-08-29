@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"text/tabwriter"
 
@@ -80,6 +81,34 @@ func splitModelRefs(values []string) []string {
 	return out
 }
 
+var uuidRef = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// validateModelRefs rejects a malformed reference before it reaches the API.
+//
+// The server enforces the same shape, but its answer is a schema violation
+// carrying the raw regex — which is what someone who typed `--models
+// claude-opus-5` would otherwise read. A slug without its provider is the
+// mistake people will actually make, since model slugs are unique only per
+// provider, so it gets its own sentence.
+func validateModelRefs(refs []string) error {
+	for _, r := range refs {
+		if uuidRef.MatchString(r) {
+			continue
+		}
+		provider, slug, found := strings.Cut(r, "/")
+		if found && provider != "" && slug != "" {
+			continue
+		}
+		if !found {
+			return fmt.Errorf(
+				"%q is missing its provider — models are named provider/slug, e.g. anthropic/%s.\n"+
+					"Run `promptvm marketplace models` to see the catalog", r, r)
+		}
+		return fmt.Errorf("%q is not a model reference; use provider/slug or a model id", r)
+	}
+	return nil
+}
+
 func printModelTable(cmd *cobra.Command, resp any, rows []struct{ Slug, Name, Provider string }) error {
 	if len(rows) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "No models set.")
@@ -151,6 +180,9 @@ func newPromptModelsSetCmd() *cobra.Command {
 			refs := splitModelRefs(models)
 			if len(refs) == 0 {
 				return fmt.Errorf("--models is required; use `models clear` to remove them all")
+			}
+			if err := validateModelRefs(refs); err != nil {
+				return err
 			}
 
 			c, err := client.NewFromContext(cmd)

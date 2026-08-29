@@ -47,6 +47,9 @@ func newListingModelsSetCmd() *cobra.Command {
 			if len(refs) == 0 {
 				return fmt.Errorf("--models is required; use `models clear` to remove them all")
 			}
+			if err := validateModelRefs(refs); err != nil {
+				return err
+			}
 
 			c, err := client.NewFromContext(cmd)
 			if err != nil {
